@@ -27,17 +27,6 @@ fn path_basename(path: &str) -> String {
     trimmed.rsplit('/').next().unwrap_or(trimmed).to_string()
 }
 
-/// Parent directory of a (possibly shortened) path, for the sidebar subtitle.
-/// "~/Desktop/cmux" -> "~/Desktop"; "/foo" -> "/"; "~" or "cmux" -> itself;
-/// empty -> empty.
-fn path_parent(path: &str) -> String {
-    match path.rfind('/') {
-        Some(0) => "/".to_string(),
-        Some(i) => path[..i].to_string(),
-        None => path.to_string(),
-    }
-}
-
 /// The sidebar title for a workspace. A user-chosen rename wins; otherwise a local
 /// workspace is identified by its working-directory basename (like upstream cmux),
 /// a remote by its host name, falling back to the default "Workspace N".
@@ -349,11 +338,13 @@ impl AppState {
             subtitle.add_css_class(workspace.connection_state.css_class());
         } else {
             subtitle.add_css_class("workspace-dir");
-            // Show the parent directory; the title already shows the basename, so
-            // together they form the full path without repeating it. Keep the tail
-            // (nearest parent) visible when it overflows.
+            // Show the FULL working directory (home shortened to ~). We used to
+            // show only the parent, but for any directory directly under $HOME the
+            // parent is just "~", so widening the sidebar revealed nothing. Showing
+            // the full path makes the width actually useful at every depth; the
+            // tail (deepest, most specific part) stays visible when it overflows.
             subtitle.set_ellipsize(gtk4::pango::EllipsizeMode::Start);
-            subtitle.set_text(&path_parent(&shorten_path(&workspace.cwd)));
+            subtitle.set_text(&shorten_path(&workspace.cwd));
         }
         // No cap: widening the sidebar reveals more of the parent path (the tail
         // stays visible thanks to Start-ellipsize). Ellipsize keeps the min width
@@ -771,7 +762,7 @@ impl AppState {
         if !ws.connection_state.is_remote() {
             if let Some(title) = vbox.first_child() {
                 if let Some(subtitle) = title.next_sibling().and_downcast::<gtk4::Label>() {
-                    subtitle.set_text(&path_parent(&shorten_path(&ws.cwd)));
+                    subtitle.set_text(&shorten_path(&ws.cwd));
                 }
             }
         }
