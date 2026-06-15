@@ -92,66 +92,94 @@ pub fn start_inline_rename(
         None => return,
     };
 
-    // Get current name from the label (Phase 4 nested layout: row > hbox > vbox > label).
-    let current_name = row
+    // Locate the title label and its containing vbox (row > hbox > vbox > [title, subtitle]).
+    // We swap ONLY the title label with an entry, leaving the subtitle, attention
+    // dot and the (wired) close button intact — replacing the whole row would
+    // orphan the close button's click handler.
+    let vbox = match row
         .child()
         .and_downcast::<gtk4::Box>()
         .and_then(|hbox| hbox.first_child())
         .and_downcast::<gtk4::Box>()
-        .and_then(|vbox| vbox.first_child())
-        .and_downcast::<gtk4::Label>()
-        .map(|l| l.text().to_string())
-        .unwrap_or_default();
+    {
+        Some(v) => v,
+        None => return,
+    };
+    let label = match vbox.first_child().and_downcast::<gtk4::Label>() {
+        Some(l) => l,
+        None => return,
+    };
+    let current_name = label.text().to_string();
+    let was_active_label = label.has_css_class("active-workspace-label");
 
-    // Replace label with entry.
+    // Swap the title label for an entry at the top of the vbox.
     let entry = gtk4::Entry::new();
     entry.set_text(&current_name);
     entry.set_placeholder_text(Some("Workspace name"));
     entry.add_css_class("rename-entry");
-    row.set_child(Some(&entry));
+    entry.set_hexpand(true);
+    vbox.remove(&label);
+    vbox.prepend(&entry);
     entry.grab_focus();
 
-    // Enter key: commit rename.
-    entry.connect_activate({
+    // Restore a title label (with the resolved text) in place of the entry.
+    let restore_label = move |vbox: &gtk4::Box, entry: &gtk4::Entry, text: &str| {
+        let label = gtk4::Label::new(Some(text));
+        label.set_halign(gtk4::Align::Start);
+        label.set_xalign(0.0);
+        label.set_hexpand(true);
+        label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        label.set_max_width_chars(12);
+        label.set_width_chars(0);
+        if was_active_label {
+            label.add_css_class("active-workspace-label");
+        }
+        vbox.remove(entry);
+        vbox.prepend(&label);
+    };
+
+    // Commit (Enter / focus-out) and cancel (Escape) all converge here.
+    let commit = {
         let state = state.clone();
-        let row = row.clone();
-        move |e| {
-            let new_name = e.text().to_string();
-            let trimmed = new_name.trim().to_string();
+        let vbox = vbox.clone();
+        let restore_label = restore_label.clone();
+        let current_name = current_name.clone();
+        move |entry: &gtk4::Entry| {
+            let trimmed = entry.text().trim().to_string();
             if !trimmed.is_empty() {
                 state.borrow_mut().rename_active(trimmed.clone());
             }
-            // Restore Phase 4 nested layout: hbox > [vbox > [label], dot, close_btn]
-            let display = if trimmed.is_empty() { &new_name } else { &trimmed };
-            row.set_child(Some(&rebuild_sidebar_row_content(display)));
+            // Show the new name if renamed, else fall back to the prior title
+            // (which may be the cwd-derived basename).
+            let display = if trimmed.is_empty() { current_name.clone() } else { trimmed };
+            restore_label(&vbox, entry, &display);
         }
-    });
+    };
 
-    // Focus-out: commit rename (same as Enter).
+    entry.connect_activate({
+        let commit = commit.clone();
+        move |e| commit(e)
+    });
     entry.connect_notify_local(Some("has-focus"), {
-        let state = state.clone();
-        let row_clone = row.clone();
+        let commit = commit.clone();
         move |e, _| {
             if !e.has_focus() && e.parent().is_some() {
-                let new_name = e.text().to_string();
-                let trimmed = new_name.trim().to_string();
-                if !trimmed.is_empty() {
-                    state.borrow_mut().rename_active(trimmed.clone());
-                }
-                let display = if trimmed.is_empty() { &new_name } else { &trimmed };
-                row_clone.set_child(Some(&rebuild_sidebar_row_content(display)));
+                commit(e);
             }
         }
     });
 
-    // Escape key: cancel rename and restore original label.
+    // Escape: cancel — restore the original title unchanged.
     let key_ctrl = gtk4::EventControllerKey::new();
     key_ctrl.connect_key_pressed({
-        let row_clone = row.clone();
-        let current_name_clone = current_name.clone();
-        move |_, keyval, _, _| {
+        let vbox = vbox.clone();
+        let restore_label = restore_label.clone();
+        let original = current_name.clone();
+        move |ctrl, keyval, _, _| {
             if keyval == gtk4::gdk::Key::Escape {
-                row_clone.set_child(Some(&rebuild_sidebar_row_content(&current_name_clone)));
+                if let Some(entry) = ctrl.widget().and_downcast::<gtk4::Entry>() {
+                    restore_label(&vbox, &entry, &original);
+                }
                 gtk4::glib::Propagation::Stop
             } else {
                 gtk4::glib::Propagation::Proceed
@@ -161,34 +189,6 @@ pub fn start_inline_rename(
     entry.add_controller(key_ctrl);
 }
 
-/// Rebuild the Phase 4 sidebar row content:
-/// GtkBox(H, 4) > [GtkBox(V, 0) > [GtkLabel(name)], GtkLabel(dot), Button(close)].
-/// Dot is hidden by default (fresh state after rename).
-/// Close button is hidden by default, shown on row hover via CSS (D-02).
-pub fn rebuild_sidebar_row_content(name: &str) -> gtk4::Box {
-    let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
-    let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-    let label = gtk4::Label::new(Some(name));
-    label.set_halign(gtk4::Align::Start);
-    label.set_hexpand(true);
-    vbox.append(&label);
-    vbox.set_hexpand(true);
-    hbox.append(&vbox);
-
-    let dot = gtk4::Label::new(None);
-    dot.add_css_class("attention-dot");
-    dot.set_visible(false);
-    hbox.append(&dot);
-
-    // Close button (D-02) -- hidden by default, shown on row hover via CSS
-    let close_btn = gtk4::Button::with_label("\u{00D7}"); // Unicode multiplication sign
-    close_btn.add_css_class("sidebar-close-btn");
-    close_btn.set_tooltip_text(Some("Close Workspace"));
-    hbox.append(&close_btn);
-
-    hbox
-}
-
 /// Wire the close button for a specific sidebar row.
 /// Called when a row is created (in app_state::create_workspace or after rename rebuild).
 pub fn wire_row_close_button(
@@ -196,6 +196,7 @@ pub fn wire_row_close_button(
     state: Rc<RefCell<crate::app_state::AppState>>,
     app: &gtk4::Application,
 ) {
+    // The row child is the hbox; the close button is its last child.
     let close_btn = row
         .child()
         .and_downcast::<gtk4::Box>()

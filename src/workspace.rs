@@ -61,6 +61,10 @@ pub struct Workspace {
     pub remote_target: Option<String>,
     /// Connection state for remote workspaces.
     pub connection_state: ConnectionState,
+    /// Working directory shown as the sidebar subtitle for local workspaces.
+    /// Currently seeded from the launch directory at creation; wiring ghostty's
+    /// PWD action (OSC 7) for live updates on `cd` is a follow-up.
+    pub cwd: String,
 }
 
 impl Workspace {
@@ -78,6 +82,7 @@ impl Workspace {
             last_notification: None,
             remote_target: None,
             connection_state: ConnectionState::Local,
+            cwd: String::new(),
         }
     }
 
@@ -100,6 +105,7 @@ impl Workspace {
             last_notification: None,
             remote_target: Some(target),
             connection_state: ConnectionState::Reconnecting(0),
+            cwd: String::new(),
         }
     }
 }

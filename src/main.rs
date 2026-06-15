@@ -51,15 +51,23 @@ paned > separator:hover { background-color: #5b8dd9; }
     min-height: 8px;
     margin: 0 4px;
 }
-/* Phase 4: SSH connection state subtitle (SSH-01, SSH-04) */
+/* SSH connection state subtitle — colored dot + text (green/orange/red). */
 .connection-state {
     font-size: 11px;
     font-weight: 400;
     color: #888888;
 }
-.connection-state.connected { color: #5b8dd9; }
-.connection-state.disconnected { color: #888888; }
+.connection-state.connected { color: #4caf50; }
+.connection-state.disconnected { color: #cc5555; }
 .connection-state.reconnecting { color: #e8a444; }
+/* Working-directory subtitle for local workspaces. */
+.workspace-dir {
+    font-size: 11px;
+    font-weight: 400;
+    color: #888888;
+    font-family: monospace;
+}
+.active-workspace .workspace-dir, .active-workspace .connection-state { color: #e8e8e8; }
 /* Phase 7.1: SSH connect dialog (SSH-01) */
 .ssh-dialog { background-color: #242424; }
 .ssh-dialog entry { font-size: 14px; padding: 8px 16px; }
@@ -90,9 +98,10 @@ paned > separator:hover { background-color: #5b8dd9; }
 .sidebar-add-btn { min-height: 36px; padding: 8px 16px; background-color: transparent; color: #cccccc; border: none; border-top: 1px solid #3a3a3a; font-size: 16px; }
 .sidebar-add-btn:hover { background-color: #2e2e2e; }
 /* Phase 9: Sidebar close button (D-02) */
-.sidebar-close-btn { min-width: 20px; min-height: 20px; padding: 0; margin: 0; background-color: transparent; color: #888888; border: none; font-size: 14px; opacity: 0; }
+.sidebar-close-btn { min-width: 18px; min-height: 18px; padding: 0; margin: 0; background-color: transparent; color: #9a9a9a; border: none; border-radius: 4px; opacity: 0; }
+.sidebar-close-btn image { -gtk-icon-size: 14px; }
 .workspace-list row:hover .sidebar-close-btn { opacity: 1; }
-.sidebar-close-btn:hover { color: #cccccc; }
+.sidebar-close-btn:hover { background-color: rgba(255, 255, 255, 0.12); color: #ffffff; }
 /* Phase 9: Context menu popover */
 popover.menu { background-color: #2a2a2a; border: 1px solid #3a3a3a; border-radius: 8px; }
 popover.menu modelbutton { padding: 8px 16px; color: #cccccc; font-size: 14px; }

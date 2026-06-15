@@ -17,6 +17,59 @@ fn is_default_workspace_name(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Last path component, for the sidebar title (e.g. "/home/lee/Desktop/cmux" -> "cmux").
+/// Empty input yields "", a bare root yields "/".
+fn path_basename(path: &str) -> String {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return if path.is_empty() { String::new() } else { "/".to_string() };
+    }
+    trimmed.rsplit('/').next().unwrap_or(trimmed).to_string()
+}
+
+/// Parent directory of a (possibly shortened) path, for the sidebar subtitle.
+/// "~/Desktop/cmux" -> "~/Desktop"; "/foo" -> "/"; "~" or "cmux" -> itself;
+/// empty -> empty.
+fn path_parent(path: &str) -> String {
+    match path.rfind('/') {
+        Some(0) => "/".to_string(),
+        Some(i) => path[..i].to_string(),
+        None => path.to_string(),
+    }
+}
+
+/// The sidebar title for a workspace. A user-chosen rename wins; otherwise a local
+/// workspace is identified by its working-directory basename (like upstream cmux),
+/// a remote by its host name, falling back to the default "Workspace N".
+fn workspace_title(ws: &Workspace) -> String {
+    if !is_default_workspace_name(&ws.name) {
+        ws.name.clone()
+    } else if ws.connection_state.is_remote() {
+        ws.name.clone()
+    } else if !ws.cwd.is_empty() {
+        path_basename(&ws.cwd)
+    } else {
+        ws.name.clone()
+    }
+}
+
+/// Shorten an absolute path for the sidebar subtitle: $HOME -> `~`. Returns the
+/// input unchanged if it isn't under $HOME; empty stays empty.
+fn shorten_path(path: &str) -> String {
+    if path.is_empty() {
+        return String::new();
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        if path == home {
+            return "~".to_string();
+        }
+        if let Some(rest) = path.strip_prefix(&format!("{home}/")) {
+            return format!("~/{rest}");
+        }
+    }
+    path.to_string()
+}
+
 pub struct AppState {
     pub split_engines: Vec<SplitEngine>,
     pub gtk_app: gtk4::Application,
@@ -105,16 +158,14 @@ impl AppState {
         self.next_display_number += 1;
 
         let mut workspace = Workspace::new(id, display_number);
-        let name = workspace.name.clone();
+        // Seed the subtitle with the launch directory until the shell reports
+        // its cwd via the PWD action.
+        workspace.cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
 
-        // Phase 9: Use shared row builder for consistent layout including close button
-        let hbox = crate::sidebar::rebuild_sidebar_row_content(&name);
-
-        let row = gtk4::ListBoxRow::new();
-        row.set_child(Some(&hbox));
-        unsafe {
-            row.set_data("workspace-id", id);
-        }
+        // Unified rich row builder (name + cwd subtitle + attention dot + close).
+        let row = self.build_sidebar_row(&workspace);
         self.sidebar_list.append(&row);
 
         // Create surface and split engine
@@ -165,6 +216,9 @@ impl AppState {
             }
             ws.name = new_name.clone();
             // Update the sidebar row label in place: row > hbox > vbox > label.
+            // Use the shared title logic so a cwd-based title isn't clobbered by
+            // the renumbered "Workspace N" (which is only a fallback).
+            let title = workspace_title(ws);
             if let Some(row) = self.sidebar_list.row_at_index(i as i32) {
                 if let Some(label) = row
                     .child()
@@ -172,7 +226,7 @@ impl AppState {
                     .and_then(|vbox| vbox.first_child())
                     .and_then(|w| w.downcast::<gtk4::Label>().ok())
                 {
-                    label.set_text(&new_name);
+                    label.set_text(&title);
                 }
             }
         }
@@ -189,13 +243,12 @@ impl AppState {
 
         let mut workspace = Workspace::new(id, display_number);
         workspace.name = ws.name.clone();
+        workspace.cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
 
-        // Phase 9: Use shared row builder for consistent layout including close button
-        let hbox = crate::sidebar::rebuild_sidebar_row_content(&workspace.name);
-
-        let row = gtk4::ListBoxRow::new();
-        row.set_child(Some(&hbox));
-        unsafe { row.set_data("workspace-id", id); }
+        // Unified rich row builder (name + cwd subtitle + attention dot + close).
+        let row = self.build_sidebar_row(&workspace);
         self.sidebar_list.append(&row);
 
         // Build split tree from session data (D-05)
@@ -217,31 +270,77 @@ impl AppState {
         Some(id)
     }
 
-    /// Build a sidebar row for a workspace. Used by create_workspace and create_remote_workspace.
+    /// Build a sidebar row for a workspace. Used by create_workspace,
+    /// restore_workspace, and create_remote_workspace.
+    ///
+    /// Two-line layout (like upstream cmux): name on top, a context subtitle
+    /// below — the working directory for local workspaces, or a colored
+    /// connection-state dot for SSH workspaces — plus an attention dot and a
+    /// hover close (×) button.
     fn build_sidebar_row(&self, workspace: &Workspace) -> gtk4::ListBoxRow {
-        let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
-        let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-        let label = gtk4::Label::new(Some(&workspace.name));
+        let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 1);
+        vbox.set_hexpand(true);
+        // Reserve room on the right so the title/path text never runs under the
+        // close button (which is always allocated, just transparent until hover).
+        vbox.set_margin_end(2);
+
+        // Title: like the original cmux, default workspaces are identified by their
+        // working directory (basename), not a generic "Workspace N".
+        let label = gtk4::Label::new(Some(&workspace_title(workspace)));
         label.set_halign(gtk4::Align::Start);
+        label.set_xalign(0.0);
         label.set_hexpand(true);
+        label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        // Cap the natural width so a long name/path can't push the close button
+        // past the fixed 160px sidebar edge (where it would be clipped away).
+        label.set_max_width_chars(12);
+        label.set_width_chars(0);
         vbox.append(&label);
 
-        // SSH connection state subtitle (only for remote workspaces)
+        // Subtitle: connection state (remote) or working directory (local).
+        let subtitle = gtk4::Label::new(None);
+        subtitle.set_halign(gtk4::Align::Start);
+        subtitle.set_xalign(0.0);
+        subtitle.set_hexpand(true);
         if workspace.connection_state.is_remote() {
-            let status = gtk4::Label::new(Some(workspace.connection_state.display_text()));
-            status.set_halign(gtk4::Align::Start);
-            status.add_css_class("connection-state");
-            status.add_css_class(workspace.connection_state.css_class());
-            vbox.append(&status);
+            subtitle.set_text(&format!(
+                "\u{25CF} {}",
+                workspace.connection_state.display_text()
+            ));
+            subtitle.add_css_class("connection-state");
+            subtitle.add_css_class(workspace.connection_state.css_class());
+        } else {
+            subtitle.add_css_class("workspace-dir");
+            // Show the parent directory; the title already shows the basename, so
+            // together they form the full path without repeating it. Keep the tail
+            // (nearest parent) visible when it overflows.
+            subtitle.set_ellipsize(gtk4::pango::EllipsizeMode::Start);
+            subtitle.set_text(&path_parent(&shorten_path(&workspace.cwd)));
         }
-        vbox.set_hexpand(true);
+        subtitle.set_max_width_chars(13);
+        subtitle.set_width_chars(0);
+        vbox.append(&subtitle);
         hbox.append(&vbox);
 
-        // Attention dot — hidden by default, shown when has_attention
+        // Attention dot — hidden by default, shown when has_attention.
         let dot = gtk4::Label::new(None);
         dot.add_css_class("attention-dot");
         dot.set_visible(false);
+        dot.set_valign(gtk4::Align::Center);
         hbox.append(&dot);
+
+        // Close (×) — in-flow trailing button so it reliably receives clicks (an
+        // overlay child over a GtkListBox row gets its click eaten by row
+        // activation). A symbolic icon renders more reliably than a text glyph.
+        // It is always allocated (no layout shift) but transparent until row hover
+        // (CSS). MUST be the LAST hbox child: wire_row_close_button() resolves it
+        // via hbox.last_child().
+        let close = gtk4::Button::from_icon_name("window-close-symbolic");
+        close.add_css_class("sidebar-close-btn");
+        close.set_tooltip_text(Some("Close Workspace"));
+        close.set_valign(gtk4::Align::Center);
+        hbox.append(&close);
 
         let row = gtk4::ListBoxRow::new();
         row.set_child(Some(&hbox));
@@ -529,10 +628,18 @@ impl AppState {
             let has_attention = self.workspaces.get(index)
                 .map(|ws| ws.has_attention)
                 .unwrap_or(false);
-            // Row layout: GtkBox(H) > [GtkBox(V) > [GtkLabel(name)], GtkLabel(dot)]
+            // Row layout: GtkBox(H) > [GtkBox(V) > [title, subtitle], dot, close-btn].
+            // Find the attention dot by its CSS class — it is NOT the last child
+            // (the close button is), so last_child() would wrongly toggle the
+            // close button's visibility and hide it.
             if let Some(hbox) = row.child().and_downcast::<gtk4::Box>() {
-                if let Some(dot) = hbox.last_child() {
-                    dot.set_visible(has_attention);
+                let mut child = hbox.first_child();
+                while let Some(w) = child {
+                    if w.has_css_class("attention-dot") {
+                        w.set_visible(has_attention);
+                        break;
+                    }
+                    child = w.next_sibling();
                 }
             }
         }
