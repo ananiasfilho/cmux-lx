@@ -611,6 +611,63 @@ impl AppState {
         }
     }
 
+    /// Update a workspace's working directory from ghostty's `.pwd` action (live
+    /// `cd` via OSC 7 / shell integration). Only the workspace's *active* pane
+    /// drives its directory tab — a background split changing dir must not retitle
+    /// the tab. Remote (SSH) workspaces keep their connection-state subtitle and
+    /// are left untouched. Refreshes the sidebar title + subtitle in place and
+    /// triggers a session save so the cwd persists across restarts.
+    pub fn update_pane_pwd(&mut self, pane_id: u64, pwd: String) {
+        // Locate the workspace whose split tree owns this pane.
+        let mut target: Option<usize> = None;
+        for (idx, engine) in self.split_engines.iter().enumerate() {
+            // Only the active pane of the workspace sets the tab's directory.
+            if engine.active_pane_id != pane_id {
+                continue;
+            }
+            let mut ids = Vec::new();
+            engine.root.collect_pane_ids(&mut ids);
+            if ids.contains(&pane_id) {
+                target = Some(idx);
+                break;
+            }
+        }
+        let Some(idx) = target else { return };
+        // SSH workspaces show connection state, not a local path.
+        if self.workspaces[idx].connection_state.is_remote() {
+            return;
+        }
+        if self.workspaces[idx].cwd == pwd {
+            return;
+        }
+        self.workspaces[idx].cwd = pwd;
+        self.refresh_sidebar_title(idx);
+        self.trigger_session_save();
+    }
+
+    /// Refresh the title + directory subtitle labels of the sidebar row at
+    /// `index` in place (without rebuilding the row, which would orphan the
+    /// wired close button). Mirrors the layout built in build_sidebar_row:
+    /// row > hbox > [vbox > [title, subtitle], dot, close].
+    fn refresh_sidebar_title(&self, index: usize) {
+        let Some(ws) = self.workspaces.get(index) else { return };
+        let Some(row) = self.sidebar_list.row_at_index(index as i32) else { return };
+        let Some(hbox) = row.child().and_downcast::<gtk4::Box>() else { return };
+        let Some(vbox) = hbox.first_child().and_downcast::<gtk4::Box>() else { return };
+        if let Some(title) = vbox.first_child().and_downcast::<gtk4::Label>() {
+            title.set_text(&workspace_title(ws));
+        }
+        // Subtitle is the second child of the vbox; only update for local
+        // workspaces (remote rows carry the colored connection-state label).
+        if !ws.connection_state.is_remote() {
+            if let Some(title) = vbox.first_child() {
+                if let Some(subtitle) = title.next_sibling().and_downcast::<gtk4::Label>() {
+                    subtitle.set_text(&path_parent(&shorten_path(&ws.cwd)));
+                }
+            }
+        }
+    }
+
     /// Clear all attention in the workspace at `index`.
     pub fn clear_workspace_attention(&mut self, index: usize) {
         if let Some(engine) = self.split_engines.get_mut(index) {

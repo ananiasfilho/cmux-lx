@@ -108,6 +108,25 @@ install -Dm0644 "$REPO_ROOT/packaging/CLAUDE.md" "$PKG_ROOT/usr/share/cmux/CLAUD
 install -Dm0755 "$REPO_ROOT/scripts/install-chromium.sh" \
     "$PKG_ROOT/usr/share/cmux/scripts/install-chromium.sh"
 
+# Ghostty bundled resources: shell-integration scripts + xterm-ghostty terminfo.
+# The wrapper points GHOSTTY_RESOURCES_DIR at /usr/share/cmux/ghostty so Ghostty
+# injects automatic shell integration (OSC 7 cwd reporting -> directory tabs,
+# prompt markers) and derives TERMINFO as the sibling /usr/share/cmux/terminfo.
+# These two MUST ship together (see cmux-app-wrapper.sh).
+#
+# Shell integration is copied straight from the pinned ghostty submodule so it
+# can never drift from the libghostty we link. terminfo is a generated artifact
+# committed under packaging/resources/terminfo (see its README for how).
+mkdir -p "$PKG_ROOT/usr/share/cmux/ghostty"
+cp -a "$REPO_ROOT/ghostty/src/shell-integration" \
+    "$PKG_ROOT/usr/share/cmux/ghostty/shell-integration"
+# cp -a preserves the terminfo symlink (g/ghostty -> ../x/xterm-ghostty).
+cp -a "$REPO_ROOT/packaging/resources/terminfo" "$PKG_ROOT/usr/share/cmux/terminfo"
+rm -f "$PKG_ROOT/usr/share/cmux/terminfo/README.md"
+# Normalize perms (cp -a keeps source perms; ensure world-readable, dirs 0755).
+find "$PKG_ROOT/usr/share/cmux/ghostty" "$PKG_ROOT/usr/share/cmux/terminfo" -type d -exec chmod 0755 {} +
+find "$PKG_ROOT/usr/share/cmux/ghostty" "$PKG_ROOT/usr/share/cmux/terminfo" \( -type f -a ! -name README.md \) -exec chmod 0644 {} +
+
 # DEBIAN/control
 mkdir -p "$PKG_ROOT/DEBIAN"
 cat > "$PKG_ROOT/DEBIAN/control" << CTRL

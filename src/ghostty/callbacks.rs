@@ -53,6 +53,13 @@ pub static BELL_PENDING: AtomicBool = AtomicBool::new(false);
 /// pane + highlight so clicking a pane activates it. 0 = nothing pending.
 pub static FOCUS_PENDING_PANE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Pending PWD (working-directory) updates from ghostty's `.pwd` action (OSC 7 /
+/// shell integration). Each entry is (pane_id, absolute_path). Drained by the
+/// main-loop poll, which updates the owning workspace's cwd + sidebar title so
+/// directory-based tabs follow live `cd`. A Vec (not an atomic) because the
+/// payload is a String; coalescing to the last value per pane happens at drain.
+pub static PENDING_PWD: Mutex<Vec<(u64, String)>> = Mutex::new(Vec::new());
+
 /// Set ghostty focus on `surface` only if it is a currently-live surface.
 ///
 /// `ghostty_surface_set_focus` dereferences the surface, so passing a null
@@ -181,6 +188,40 @@ pub unsafe extern "C" fn action_cb(
             if let Some(pane_id) = pane_id {
                 BELL_PANE_ID.store(pane_id, std::sync::atomic::Ordering::SeqCst);
                 BELL_PENDING.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        return true;
+    }
+
+    // Live working-directory tracking: ghostty fires `.pwd` when the shell reports
+    // a new cwd via OSC 7 (shell integration). Map the source surface → pane_id and
+    // queue the path; the main-loop poll updates the owning workspace's directory
+    // tab. Runs on the main thread (during ghostty_app_tick), but we only touch
+    // thread-safe statics here and defer GTK work to the poll.
+    if action.tag == ffi::ghostty_action_tag_e_GHOSTTY_ACTION_PWD {
+        if _target.tag == ffi::ghostty_target_tag_e_GHOSTTY_TARGET_SURFACE {
+            let surface_ptr = unsafe { _target.target.surface } as usize;
+            let pane_id = {
+                if let Ok(reg) = SURFACE_REGISTRY.lock() {
+                    reg.get(&surface_ptr).copied()
+                } else {
+                    None
+                }
+            };
+            if let Some(pane_id) = pane_id {
+                // The union holds a NUL-terminated C string; ghostty owns it and
+                // it's only valid for this call, so copy it out now.
+                let pwd_ptr = unsafe { action.action.pwd.pwd };
+                if !pwd_ptr.is_null() {
+                    let pwd = unsafe { std::ffi::CStr::from_ptr(pwd_ptr) }
+                        .to_string_lossy()
+                        .into_owned();
+                    if !pwd.is_empty() {
+                        if let Ok(mut q) = PENDING_PWD.lock() {
+                            q.push((pane_id, pwd));
+                        }
+                    }
+                }
             }
         }
         return true;

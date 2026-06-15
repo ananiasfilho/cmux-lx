@@ -32,4 +32,18 @@ if command -v nvidia-smi >/dev/null 2>&1 || [ -e /dev/nvidia0 ]; then
     esac
 fi
 
+# Point Ghostty at its bundled resources so automatic shell integration can be
+# injected. This enables:
+#   * live working-directory reporting (OSC 7) -> directory-based sidebar tabs
+#     that follow `cd`, plus prompt/command markers.
+#   * the xterm-ghostty terminfo entry (Ghostty derives TERMINFO as the sibling
+#     `terminfo` dir of GHOSTTY_RESOURCES_DIR).
+# Only set it if the user hasn't, and only if the bundled tree exists. NOTE:
+# shell-integration and terminfo MUST ship together — if Ghostty has a
+# resources dir it sets TERM=xterm-ghostty, so a missing terminfo entry makes
+# the terminal "unknown" to every TUI.
+if [ -z "$GHOSTTY_RESOURCES_DIR" ] && [ -d /usr/share/cmux/ghostty/shell-integration ]; then
+    export GHOSTTY_RESOURCES_DIR=/usr/share/cmux/ghostty
+fi
+
 exec /usr/bin/cmux-app.bin "$@"

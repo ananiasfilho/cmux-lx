@@ -429,6 +429,30 @@ fn build_ui(
                     state.borrow_mut().set_pane_attention(pane_id);
                 }
             }
+            // Live working-directory updates: ghostty queued one or more `.pwd`
+            // actions (OSC 7) since the last tick. Apply the latest path per pane
+            // so directory-based tabs follow `cd`.
+            {
+                let drained: Vec<(u64, String)> = {
+                    if let Ok(mut q) = crate::ghostty::callbacks::PENDING_PWD.lock() {
+                        std::mem::take(&mut *q)
+                    } else {
+                        Vec::new()
+                    }
+                };
+                if !drained.is_empty() {
+                    // Coalesce to the last reported path per pane.
+                    let mut latest: std::collections::HashMap<u64, String> =
+                        std::collections::HashMap::new();
+                    for (pane_id, pwd) in drained {
+                        latest.insert(pane_id, pwd);
+                    }
+                    let mut st = state.borrow_mut();
+                    for (pane_id, pwd) in latest {
+                        st.update_pane_pwd(pane_id, pwd);
+                    }
+                }
+            }
             // Click/focus-to-activate: move the active pane to whatever pane most
             // recently received GTK focus (e.g. via a mouse click on a split pane).
             let focus_pane = crate::ghostty::callbacks::FOCUS_PENDING_PANE.swap(0, std::sync::atomic::Ordering::SeqCst);
