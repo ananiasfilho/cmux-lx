@@ -197,7 +197,7 @@ impl AppState {
             id, pane_id
         );
         let (gl_area, surface_cell) =
-            crate::ghostty::surface::create_surface(&self.gtk_app, self.ghostty_app, None, pane_id, crate::ghostty::surface::SurfaceIoMode::Exec);
+            crate::ghostty::surface::create_surface(&self.gtk_app, self.ghostty_app, None, pane_id, crate::ghostty::surface::SurfaceIoMode::Exec, None);
         let engine = SplitEngine::new(
             self.gtk_app.clone(),
             self.ghostty_app,
@@ -265,20 +265,34 @@ impl AppState {
 
         let mut workspace = Workspace::new(id, display_number);
         workspace.name = ws.name.clone();
-        workspace.cwd = std::env::current_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
+        // Reopen in the saved working directory so the tab shows the right path
+        // immediately and its pane(s) start there. Fall back to the launch dir
+        // for pre-feature sessions (empty saved cwd).
+        workspace.cwd = if !ws.cwd.is_empty() {
+            ws.cwd.clone()
+        } else {
+            std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default()
+        };
 
         // Unified rich row builder (name + cwd subtitle + attention dot + close).
         let row = self.build_sidebar_row(&workspace);
         self.sidebar_list.append(&row);
 
-        // Build split tree from session data (D-05)
+        // Build split tree from session data (D-05). Restored panes reopen in the
+        // workspace's saved cwd (the launch dir is meaningless after a restart).
+        let restore_cwd = if workspace.cwd.is_empty() {
+            None
+        } else {
+            Some(workspace.cwd.as_str())
+        };
         let engine = crate::split_engine::SplitEngine::from_data(
             self.gtk_app.clone(),
             self.ghostty_app,
             &ws.layout,
             ws.active_pane_uuid.as_deref(),
+            restore_cwd,
         )?;
 
         // Add to stack
@@ -415,6 +429,7 @@ impl AppState {
             None,
             pane_id,
             crate::ghostty::surface::SurfaceIoMode::Manual { io_write_ctx: io_ctx.clone() },
+            None,
         );
         let engine = SplitEngine::new(
             self.gtk_app.clone(),
@@ -839,6 +854,7 @@ impl AppState {
                             name: ws.name.clone(),
                             active_pane_uuid,
                             layout,
+                            cwd: ws.cwd.clone(),
                         }
                     }).collect(),
                     sidebar_width: Some(self.sidebar_width),

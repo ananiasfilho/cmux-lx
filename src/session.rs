@@ -10,6 +10,10 @@ pub struct WorkspaceSession {
     pub active_pane_uuid: Option<String>,
     /// The full pane layout tree for this workspace.
     pub layout: SplitNodeData,
+    /// Workspace working directory (the active pane's cwd, tracked via OSC 7).
+    /// Restored panes reopen here. Empty/`default` for pre-feature sessions.
+    #[serde(default)]
+    pub cwd: String,
 }
 
 /// Root session data written to session.json.
@@ -111,6 +115,7 @@ mod tests {
                     shell: "/bin/sh".to_string(),
                     cwd: "/tmp".to_string(),
                 },
+                cwd: "/tmp".to_string(),
             }],
             sidebar_width: None,
         }

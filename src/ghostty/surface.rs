@@ -38,6 +38,7 @@ pub fn create_surface(
     inherited_config: Option<ffi::ghostty_surface_config_s>,
     pane_id: u64,
     io_mode: SurfaceIoMode,
+    working_directory: Option<String>,
 ) -> (gtk4::GLArea, Rc<RefCell<Option<ffi::ghostty_surface_t>>>) {
     use gtk4::prelude::*;
     use std::sync::atomic::Ordering;
@@ -96,6 +97,7 @@ pub fn create_surface(
         let cell = surface_cell.clone();
         let userdata_cell = ssh_userdata_cell.clone();
         let io_mode = io_mode;
+        let working_directory = working_directory.clone();
         move |area| {
             eprintln!(
                 "cmux: GLArea {:p} realize for pane_id={} — making GL context current",
@@ -186,6 +188,19 @@ pub fn create_surface(
                 surface_config.platform = platform;
                 surface_config.userdata = std::ptr::null_mut();
                 surface_config.scale_factor = area.scale_factor() as f64;
+
+                // Restored panes reopen in their saved working directory. Ghostty
+                // dupes this string into its config arena during surface_new (and
+                // falls back gracefully if the dir no longer exists), so the
+                // CString only needs to outlive the ghostty_surface_new call below
+                // — _wd_keepalive holds it until the end of this scope.
+                let _wd_keepalive: Option<std::ffi::CString> = working_directory
+                    .as_deref()
+                    .filter(|wd| !wd.is_empty())
+                    .and_then(|wd| std::ffi::CString::new(wd).ok());
+                if let Some(ref c) = _wd_keepalive {
+                    surface_config.working_directory = c.as_ptr();
+                }
 
                 // Set manual I/O mode for SSH remote surfaces.
                 if let SurfaceIoMode::Manual { ref io_write_ctx } = io_mode {

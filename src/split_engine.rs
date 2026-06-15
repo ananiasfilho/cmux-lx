@@ -369,9 +369,10 @@ impl SplitEngine {
         ghostty_app: ffi::ghostty_app_t,
         data: &SplitNodeData,
         active_pane_uuid: Option<&str>,
+        working_directory: Option<&str>,
     ) -> Option<Self> {
         let mut next_pane_id: u64 = 1;
-        let root = Self::node_from_data(&app, ghostty_app, data, &mut next_pane_id, 0)?;
+        let root = Self::node_from_data(&app, ghostty_app, data, &mut next_pane_id, 0, working_directory)?;
         // Find active pane by saved UUID, or fall back to first leaf
         let active_id = active_pane_uuid
             .and_then(|uuid_str| root.find_pane_id_by_uuid(uuid_str))
@@ -401,6 +402,7 @@ impl SplitEngine {
         data: &SplitNodeData,
         next_pane_id: &mut u64,
         depth: u32,
+        working_directory: Option<&str>,
     ) -> Option<SplitNode> {
         if depth > 16 {
             eprintln!("cmux: session restore tree depth > 16, falling back (D-14)");
@@ -410,9 +412,17 @@ impl SplitEngine {
             SplitNodeData::Leaf { surface_uuid, .. } => {
                 let pane_id = *next_pane_id;
                 *next_pane_id += 1;
-                // Create surface — realize callback will create Ghostty surface and wire registries
+                // Create surface — realize callback will create Ghostty surface and wire registries.
+                // Restored panes reopen in the workspace's saved working directory.
                 let (gl_area, _surface_cell) =
-                    crate::ghostty::surface::create_surface(app, ghostty_app, None, pane_id, crate::ghostty::surface::SurfaceIoMode::Exec);
+                    crate::ghostty::surface::create_surface(
+                        app,
+                        ghostty_app,
+                        None,
+                        pane_id,
+                        crate::ghostty::surface::SurfaceIoMode::Exec,
+                        working_directory.map(|s| s.to_string()),
+                    );
                 // Phase 9: Attach right-click context menu (D-08)
                 attach_terminal_context_menu(&gl_area);
                 // D-06: preserve UUID from session
@@ -427,8 +437,8 @@ impl SplitEngine {
                 })
             }
             SplitNodeData::Split { orientation, ratio, start, end } => {
-                let start_node = Self::node_from_data(app, ghostty_app, start, next_pane_id, depth + 1)?;
-                let end_node = Self::node_from_data(app, ghostty_app, end, next_pane_id, depth + 1)?;
+                let start_node = Self::node_from_data(app, ghostty_app, start, next_pane_id, depth + 1, working_directory)?;
+                let end_node = Self::node_from_data(app, ghostty_app, end, next_pane_id, depth + 1, working_directory)?;
                 let gtk_orientation = match orientation.as_str() {
                     "vertical" => gtk4::Orientation::Vertical,
                     _ => gtk4::Orientation::Horizontal,
@@ -616,6 +626,7 @@ impl SplitEngine {
             Some(inherited_config),
             new_pane_id,
             crate::ghostty::surface::SurfaceIoMode::Exec,
+            None,
         );
         // Phase 9: Attach right-click context menu (D-08)
         attach_terminal_context_menu(&new_gl_area);
