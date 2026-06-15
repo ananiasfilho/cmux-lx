@@ -298,7 +298,7 @@ fn build_ui(
     // 3. Build the window layout
     let window = ApplicationWindow::builder()
         .application(app)
-        .title("cmux")
+        .title("cmux-lx")
         .default_width(800)
         .default_height(600)
         .build();
@@ -307,9 +307,28 @@ fn build_ui(
     let stack = gtk4::Stack::new();
     stack.set_transition_type(gtk4::StackTransitionType::None);
 
-    let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-    hbox.append(&sidebar_box);
-    hbox.append(&stack);
+    // Resizable sidebar: a horizontal GtkPaned with the sidebar on the left and
+    // the terminal stack on the right. Dragging the divider widens the sidebar so
+    // long directory paths (the subtitle) reveal more of their parent path.
+    let initial_sidebar_width = saved_session
+        .as_ref()
+        .and_then(|s| s.sidebar_width)
+        .unwrap_or(crate::app_state::DEFAULT_SIDEBAR_WIDTH)
+        .clamp(
+            crate::app_state::MIN_SIDEBAR_WIDTH,
+            crate::app_state::MAX_SIDEBAR_WIDTH,
+        );
+    let paned = gtk4::Paned::new(gtk4::Orientation::Horizontal);
+    paned.set_start_child(Some(&sidebar_box));
+    paned.set_end_child(Some(&stack));
+    // Keep the sidebar's width fixed on window resize (only the stack grows), and
+    // don't let it shrink below its min size_request.
+    paned.set_resize_start_child(false);
+    paned.set_shrink_start_child(false);
+    paned.set_resize_end_child(true);
+    paned.set_shrink_end_child(true);
+    paned.set_wide_handle(true);
+    paned.set_position(initial_sidebar_width);
     // Make the stack expand to fill remaining width.
     stack.set_hexpand(true);
     stack.set_vexpand(true);
@@ -319,7 +338,7 @@ fn build_ui(
         window.set_titlebar(Some(&header));
     }
 
-    window.set_child(Some(&hbox));
+    window.set_child(Some(&paned));
 
     // 4. Create AppState and initial workspace
     let state = crate::app_state::AppState::new(
@@ -329,6 +348,27 @@ fn build_ui(
         app.clone(),
     );
     state.borrow_mut().chromium_path_override = config.browser.chromium_path.clone();
+    state.borrow_mut().sidebar_width = initial_sidebar_width;
+
+    // Persist the sidebar width as the user drags the divider. Clamp to the max
+    // (GtkPaned already enforces the min via shrink=false + the sidebar's
+    // size_request) and save through the debounced session path.
+    {
+        let state = state.clone();
+        let paned = paned.clone();
+        paned.connect_position_notify(move |p| {
+            let mut pos = p.position();
+            if pos > crate::app_state::MAX_SIDEBAR_WIDTH {
+                pos = crate::app_state::MAX_SIDEBAR_WIDTH;
+                p.set_position(pos); // re-notifies once, but now in range
+            }
+            let mut s = state.borrow_mut();
+            if s.sidebar_width != pos {
+                s.sidebar_width = pos;
+                s.trigger_session_save();
+            }
+        });
+    }
 
     // Wire sidebar click-to-switch.
     crate::sidebar::wire_sidebar_clicks(&sidebar_list, state.clone());

@@ -20,6 +20,11 @@ pub struct SessionData {
     /// Index of the active workspace in the workspaces array.
     pub active_index: usize,
     pub workspaces: Vec<WorkspaceSession>,
+    /// Persisted sidebar width in px (the GtkPaned divider position). `None` in
+    /// sessions written before the sidebar became resizable — restore falls back
+    /// to the default width.
+    #[serde(default)]
+    pub sidebar_width: Option<i32>,
 }
 
 /// Returns the session file path.
@@ -107,6 +112,7 @@ mod tests {
                     cwd: "/tmp".to_string(),
                 },
             }],
+            sidebar_width: None,
         }
     }
 

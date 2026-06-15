@@ -286,11 +286,18 @@ pub fn register_actions(
     action.connect_activate({
         let state = state.clone();
         move |_, _| {
-            let (active_index, sidebar_list) = {
-                let s = state.borrow();
-                (s.active_index, s.sidebar_list.clone())
-            };
-            crate::sidebar::start_inline_rename(&sidebar_list, active_index, state.clone());
+            // Defer until the triggering popover has fully closed and released its
+            // focus grab; otherwise the rename entry can't keep keyboard focus and
+            // commits/tears down instantly. The Ctrl+Shift+R path calls
+            // start_inline_rename directly (no popover) and is unaffected.
+            let state = state.clone();
+            glib::idle_add_local_once(move || {
+                let (active_index, sidebar_list) = {
+                    let s = state.borrow();
+                    (s.active_index, s.sidebar_list.clone())
+                };
+                crate::sidebar::start_inline_rename(&sidebar_list, active_index, state.clone());
+            });
         }
     });
     window.add_action(&action);
@@ -318,10 +325,10 @@ pub fn register_actions(
         move |_, _| {
             if let Some(win) = window_weak.upgrade() {
                 let about = gtk4::AboutDialog::builder()
-                    .program_name("cmux")
+                    .program_name("cmux-lx")
                     .version(env!("CARGO_PKG_VERSION"))
                     .comments("GPU-accelerated terminal multiplexer for Linux")
-                    .website("https://github.com/manaflow-ai/cmux")
+                    .website("https://github.com/leeb003/cmux-lx")
                     .license_type(gtk4::License::MitX11)
                     .transient_for(&win)
                     .modal(true)

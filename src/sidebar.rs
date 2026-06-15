@@ -22,7 +22,9 @@ pub fn build_sidebar() -> (gtk4::Box, gtk4::ScrolledWindow, gtk4::ListBox) {
     list_box.add_css_class("workspace-list");
 
     let scrolled = gtk4::ScrolledWindow::new();
-    scrolled.set_size_request(160, -1);
+    // Minimum width of the resizable sidebar; the GtkPaned (shrink_start_child
+    // = false) won't let the divider drag narrower than this.
+    scrolled.set_size_request(crate::app_state::MIN_SIDEBAR_WIDTH, -1);
     scrolled.set_hscrollbar_policy(gtk4::PolicyType::Never);
     scrolled.set_vscrollbar_policy(gtk4::PolicyType::Automatic);
     scrolled.set_child(Some(&list_box));
@@ -129,7 +131,7 @@ pub fn start_inline_rename(
         label.set_xalign(0.0);
         label.set_hexpand(true);
         label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-        label.set_max_width_chars(12);
+        // No cap — the sidebar is a resizable pane now (matches build_sidebar_row).
         label.set_width_chars(0);
         if was_active_label {
             label.add_css_class("active-workspace-label");
@@ -160,10 +162,20 @@ pub fn start_inline_rename(
         let commit = commit.clone();
         move |e| commit(e)
     });
+    // Commit on focus-out — but only after the entry has genuinely held focus at
+    // least once. When rename is started from the right-click popover, the
+    // popover is still relinquishing its focus grab as the entry appears, so the
+    // entry can see a spurious focus-out before it ever focuses; without this
+    // guard that immediately commits and tears the entry down (the bug where
+    // right-click rename "did nothing" while the Ctrl+Shift+R path worked).
+    let has_focused = std::rc::Rc::new(std::cell::Cell::new(false));
     entry.connect_notify_local(Some("has-focus"), {
         let commit = commit.clone();
+        let has_focused = has_focused.clone();
         move |e, _| {
-            if !e.has_focus() && e.parent().is_some() {
+            if e.has_focus() {
+                has_focused.set(true);
+            } else if has_focused.get() && e.parent().is_some() {
                 commit(e);
             }
         }

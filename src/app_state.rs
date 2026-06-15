@@ -53,6 +53,18 @@ fn workspace_title(ws: &Workspace) -> String {
     }
 }
 
+/// Tooltip text for a sidebar row: the full working directory (local) or the
+/// remote target (SSH). Falls back to the tab title when no cwd is known yet.
+fn row_tooltip(ws: &Workspace) -> String {
+    if let Some(ref target) = ws.remote_target {
+        return target.clone();
+    }
+    if !ws.cwd.is_empty() {
+        return ws.cwd.clone();
+    }
+    workspace_title(ws)
+}
+
 /// Shorten an absolute path for the sidebar subtitle: $HOME -> `~`. Returns the
 /// input unchanged if it isn't under $HOME; empty stays empty.
 fn shorten_path(path: &str) -> String {
@@ -112,7 +124,16 @@ pub struct AppState {
     pub browser_surface_counter: u32,
     /// Maps short-ref ID -> surface UUID (lost on restart, per D-06).
     pub browser_surface_refs: std::collections::HashMap<u32, String>,
+    /// Current sidebar width in px (GtkPaned divider position). Updated as the
+    /// user drags the divider; persisted in the session so it survives restarts.
+    pub sidebar_width: i32,
 }
+
+/// Default sidebar width (px) when no session value is restored.
+pub const DEFAULT_SIDEBAR_WIDTH: i32 = 170;
+/// Clamp range for the resizable sidebar.
+pub const MIN_SIDEBAR_WIDTH: i32 = 140;
+pub const MAX_SIDEBAR_WIDTH: i32 = 480;
 
 impl AppState {
     /// Create a new AppState. Does NOT create the first workspace — caller must call
@@ -144,6 +165,7 @@ impl AppState {
             chromium_path_override: None,
             browser_surface_counter: 0,
             browser_surface_refs: std::collections::HashMap::new(),
+            sidebar_width: DEFAULT_SIDEBAR_WIDTH,
         };
         Rc::new(RefCell::new(state))
     }
@@ -292,9 +314,10 @@ impl AppState {
         label.set_xalign(0.0);
         label.set_hexpand(true);
         label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-        // Cap the natural width so a long name/path can't push the close button
-        // past the fixed 160px sidebar edge (where it would be clipped away).
-        label.set_max_width_chars(12);
+        // No natural-width cap: the sidebar is now a resizable GtkPaned, so the
+        // label should grow with it (revealing more of a long name) and ellipsize
+        // only at the actual edge. Ellipsize gives the label a tiny minimum width,
+        // so it never pushes the close button out of the row.
         label.set_width_chars(0);
         vbox.append(&label);
 
@@ -318,16 +341,24 @@ impl AppState {
             subtitle.set_ellipsize(gtk4::pango::EllipsizeMode::Start);
             subtitle.set_text(&path_parent(&shorten_path(&workspace.cwd)));
         }
-        subtitle.set_max_width_chars(13);
+        // No cap: widening the sidebar reveals more of the parent path (the tail
+        // stays visible thanks to Start-ellipsize). Ellipsize keeps the min width
+        // tiny so the close button is never pushed out.
         subtitle.set_width_chars(0);
         vbox.append(&subtitle);
         hbox.append(&vbox);
 
-        // Attention dot — hidden by default, shown when has_attention.
-        let dot = gtk4::Label::new(None);
+        // Attention dot — hidden by default, shown when has_attention. Use a Box
+        // (not a Label): an empty Label still claims its font line-height (~16px),
+        // so an 8px-wide circle stretches into a vertical egg. A Box has no
+        // intrinsic content height, so a fixed 8x8 request + center alignment
+        // gives a true square → border-radius:50% renders a round dot.
+        let dot = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
         dot.add_css_class("attention-dot");
         dot.set_visible(false);
+        dot.set_halign(gtk4::Align::Center);
         dot.set_valign(gtk4::Align::Center);
+        dot.set_size_request(8, 8);
         hbox.append(&dot);
 
         // Close (×) — in-flow trailing button so it reliably receives clicks (an
@@ -344,6 +375,9 @@ impl AppState {
 
         let row = gtk4::ListBoxRow::new();
         row.set_child(Some(&hbox));
+        // Hovering the tab reveals the full working directory (or remote target),
+        // since the title/subtitle only show the basename + truncated parent.
+        row.set_tooltip_text(Some(&row_tooltip(workspace)));
         unsafe {
             row.set_data("workspace-id", workspace.id);
         }
@@ -710,6 +744,8 @@ impl AppState {
     fn refresh_sidebar_title(&self, index: usize) {
         let Some(ws) = self.workspaces.get(index) else { return };
         let Some(row) = self.sidebar_list.row_at_index(index as i32) else { return };
+        // Keep the hover tooltip in sync with the new working directory.
+        row.set_tooltip_text(Some(&row_tooltip(ws)));
         let Some(hbox) = row.child().and_downcast::<gtk4::Box>() else { return };
         let Some(vbox) = hbox.first_child().and_downcast::<gtk4::Box>() else { return };
         if let Some(title) = vbox.first_child().and_downcast::<gtk4::Label>() {
@@ -805,6 +841,7 @@ impl AppState {
                             layout,
                         }
                     }).collect(),
+                    sidebar_width: Some(self.sidebar_width),
                 };
                 let _ = tx.send(session);
             }
