@@ -60,6 +60,14 @@ pub static FOCUS_PENDING_PANE: std::sync::atomic::AtomicU64 = std::sync::atomic:
 /// payload is a String; coalescing to the last value per pane happens at drain.
 pub static PENDING_PWD: Mutex<Vec<(u64, String)>> = Mutex::new(Vec::new());
 
+/// Pending desktop notifications from ghostty's `.desktop_notification` action
+/// (OSC 9 / OSC 777). These are how AI coding agents (Claude Code, Codex, …)
+/// signal "I'm done" / "I need input": the agent emits the escape sequence,
+/// ghostty fires the action, and we route it to the owning workspace as an
+/// unread badge + a native desktop notification. Each entry is
+/// (pane_id, title, body). Drained by the main-loop poll.
+pub static PENDING_NOTIFICATIONS: Mutex<Vec<(u64, String, String)>> = Mutex::new(Vec::new());
+
 /// Set ghostty focus on `surface` only if it is a currently-live surface.
 ///
 /// `ghostty_surface_set_focus` dereferences the surface, so passing a null
@@ -221,6 +229,41 @@ pub unsafe extern "C" fn action_cb(
                             q.push((pane_id, pwd));
                         }
                     }
+                }
+            }
+        }
+        return true;
+    }
+
+    // AI / terminal desktop notifications (OSC 9, OSC 777). This is the channel
+    // coding agents use to say "task finished" / "needs your input". Map the
+    // source surface → pane_id and queue (title, body) for the main-loop poll,
+    // which raises the owning workspace's unread badge + a native notification.
+    if action.tag == ffi::ghostty_action_tag_e_GHOSTTY_ACTION_DESKTOP_NOTIFICATION {
+        if _target.tag == ffi::ghostty_target_tag_e_GHOSTTY_TARGET_SURFACE {
+            let surface_ptr = unsafe { _target.target.surface } as usize;
+            let pane_id = {
+                if let Ok(reg) = SURFACE_REGISTRY.lock() {
+                    reg.get(&surface_ptr).copied()
+                } else {
+                    None
+                }
+            };
+            if let Some(pane_id) = pane_id {
+                // ghostty owns these C strings only for this call — copy now.
+                let read_cstr = |p: *const std::os::raw::c_char| -> String {
+                    if p.is_null() {
+                        String::new()
+                    } else {
+                        unsafe { std::ffi::CStr::from_ptr(p) }
+                            .to_string_lossy()
+                            .into_owned()
+                    }
+                };
+                let title = read_cstr(unsafe { action.action.desktop_notification.title });
+                let body = read_cstr(unsafe { action.action.desktop_notification.body });
+                if let Ok(mut q) = PENDING_NOTIFICATIONS.lock() {
+                    q.push((pane_id, title, body));
                 }
             }
         }

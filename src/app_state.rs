@@ -611,6 +611,64 @@ impl AppState {
         }
     }
 
+    /// Handle a terminal desktop notification (OSC 9 / OSC 777) — the channel AI
+    /// coding agents use to signal completion or that they need input. Mirrors
+    /// upstream cmux: route to the owning workspace, raise its unread/attention
+    /// badge, and deliver a native notification carrying the agent's title/body.
+    /// The native banner is suppressed while that exact workspace is focused
+    /// (you're already looking at it), matching upstream's "active key window"
+    /// suppression; the badge is always set so switching away still shows it.
+    pub fn handle_terminal_notification(&mut self, pane_id: u64, title: String, body: String) {
+        // Find the owning workspace without mutating (set_attention both finds
+        // and sets, so we locate by pane membership first to decide whether to
+        // badge at all).
+        let mut owner: Option<usize> = None;
+        for (idx, engine) in self.split_engines.iter().enumerate() {
+            let mut ids = Vec::new();
+            engine.root.collect_pane_ids(&mut ids);
+            if ids.contains(&pane_id) {
+                owner = Some(idx);
+                break;
+            }
+        }
+        let Some(idx) = owner else { return };
+
+        // If the user is actively looking at this workspace, treat it as already
+        // read: no badge, no banner (matches upstream suppressing the banner for
+        // the active key window and clearing unread on view).
+        let window_focused = self.gtk_app.active_window()
+            .map(|w| w.is_active())
+            .unwrap_or(false);
+        let is_viewing = window_focused && idx == self.active_index;
+        if is_viewing {
+            return;
+        }
+
+        // Raise the unread badge on the owning tab.
+        self.split_engines[idx].root.set_attention(pane_id, true);
+        self.workspaces[idx].has_attention = self.split_engines[idx].root.any_attention();
+        self.update_sidebar_attention(idx);
+
+        // Rate-limit native banners to 1 per workspace per 5s (shared with bell).
+        let should_notify = self.workspaces[idx].last_notification
+            .map(|t| t.elapsed() >= std::time::Duration::from_secs(5))
+            .unwrap_or(true);
+        if should_notify {
+            self.workspaces[idx].last_notification = Some(std::time::Instant::now());
+            // Match upstream cmux: the notification summary is the agent's title,
+            // falling back to the tab title (the directory name) when the agent
+            // gave no title (e.g. the OSC 9 single-message form, which ghostty
+            // delivers as body-only). The unread badge on the specific tab
+            // carries the which-workspace context.
+            let summary = if title.is_empty() {
+                workspace_title(&self.workspaces[idx])
+            } else {
+                title.clone()
+            };
+            send_desktop_notification(&summary, &body);
+        }
+    }
+
     /// Update a workspace's working directory from ghostty's `.pwd` action (live
     /// `cd` via OSC 7 / shell integration). Only the workspace's *active* pane
     /// drives its directory tab — a background split changing dir must not retitle
@@ -764,6 +822,33 @@ impl AppState {
 /// FdoNotificationDaemonSource._onNameVanished() to destroy the notification immediately.
 /// `notify-send` avoids this because it's a separate process whose D-Bus lifetime is
 /// independent of cmux.
+/// Send a native desktop notification for an AI/terminal notification
+/// (OSC 9 / OSC 777). `summary` is the headline (agent title or tab title),
+/// `body` the agent-provided detail (may be empty). Uses `notify-send` for the
+/// same D-Bus-lifetime reason as `send_bell_notification`.
+fn send_desktop_notification(summary: &str, body: &str) {
+    let summary = if summary.is_empty() { "cmux".to_string() } else { summary.to_string() };
+    let body = body.to_string();
+    std::thread::spawn(move || {
+        let result = std::process::Command::new("notify-send")
+            .arg("--app-name=cmux")
+            .arg("--icon=utilities-terminal")
+            .arg("--expire-time=8000")
+            .arg(&summary)
+            .arg(&body)
+            .status();
+        match result {
+            Ok(status) if !status.success() => {
+                eprintln!("cmux: notify-send exited with {status}");
+            }
+            Err(e) => {
+                eprintln!("cmux: failed to run notify-send: {e}");
+            }
+            _ => {}
+        }
+    });
+}
+
 fn send_bell_notification(_app: &gtk4::Application, workspace_name: &str, _workspace_index: usize) {
     let body = format!("{} - Terminal bell", workspace_name);
     std::thread::spawn(move || {

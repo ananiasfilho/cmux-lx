@@ -421,12 +421,45 @@ fn build_ui(
     // SSH events arrive via ssh_event_rx from tokio tasks.
     {
         let state = state.clone();
+        // Tracks window focus across ticks so we can clear the active workspace's
+        // unread badge on the rising edge (window regains focus) — "viewing a
+        // workspace marks it read", matching upstream. Without an edge check we'd
+        // clear every tick and fight any badge legitimately set while focused.
+        let mut was_focused = false;
         glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+            // Clear the active workspace's attention when the window regains focus.
+            {
+                let mut st = state.borrow_mut();
+                let focused = st.gtk_app.active_window().map(|w| w.is_active()).unwrap_or(false);
+                if focused && !was_focused {
+                    let idx = st.active_index;
+                    st.clear_workspace_attention(idx);
+                }
+                was_focused = focused;
+            }
             // Process bell notifications
             if crate::ghostty::callbacks::BELL_PENDING.swap(false, std::sync::atomic::Ordering::SeqCst) {
                 let pane_id = crate::ghostty::callbacks::BELL_PANE_ID.load(std::sync::atomic::Ordering::SeqCst);
                 if pane_id != 0 {
                     state.borrow_mut().set_pane_attention(pane_id);
+                }
+            }
+            // AI / terminal desktop notifications (OSC 9 / OSC 777): an agent in
+            // some pane signaled completion or that it needs input. Route each to
+            // the owning workspace (unread badge + native banner).
+            {
+                let notifications: Vec<(u64, String, String)> = {
+                    if let Ok(mut q) = crate::ghostty::callbacks::PENDING_NOTIFICATIONS.lock() {
+                        std::mem::take(&mut *q)
+                    } else {
+                        Vec::new()
+                    }
+                };
+                if !notifications.is_empty() {
+                    let mut st = state.borrow_mut();
+                    for (pane_id, title, body) in notifications {
+                        st.handle_terminal_notification(pane_id, title, body);
+                    }
                 }
             }
             // Live working-directory updates: ghostty queued one or more `.pwd`
