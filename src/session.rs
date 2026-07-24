@@ -3,13 +3,37 @@ use std::path::{Path, PathBuf};
 
 /// Serializable snapshot of a single workspace for session persistence.
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct TabSession {
+    /// Tab label. A user rename is preserved; an auto-derived title is not
+    /// meaningful to restore, so it is recomputed from the cwd on load.
+    pub title: String,
+    /// True when `title` came from an explicit rename rather than the working
+    /// directory, so restore knows whether to keep it or re-derive it.
+    #[serde(default)]
+    pub renamed: bool,
+    pub layout: SplitNodeData,
+    pub active_pane_uuid: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct WorkspaceSession {
     pub uuid: String,
     pub name: String,
     /// UUID of the active pane in this workspace, if any.
     pub active_pane_uuid: Option<String>,
     /// The full pane layout tree for this workspace.
+    ///
+    /// v2 field, kept so a v3 session still loads on an older build and so
+    /// loading a v2 session needs no special case: it holds the active tab's
+    /// layout, which is exactly what a tab-less build expects.
     pub layout: SplitNodeData,
+    /// Every tab of this workspace (v3). Empty in v2 sessions, in which case
+    /// `layout` is the single tab.
+    #[serde(default)]
+    pub tabs: Vec<TabSession>,
+    /// Index of the active tab within `tabs`.
+    #[serde(default)]
+    pub active_tab: usize,
     /// Workspace working directory (the active pane's cwd, tracked via OSC 7).
     /// Restored panes reopen here. Empty/`default` for pre-feature sessions.
     #[serde(default)]
@@ -132,6 +156,8 @@ mod tests {
                     cwd: "/tmp".to_string(),
                 },
                 cwd: "/tmp".to_string(),
+                tabs: Vec::new(),
+                active_tab: 0,
             }],
             sidebar_width: None,
             window_width: None,
@@ -233,5 +259,67 @@ mod tests {
         assert_eq!(parsed.window_width, None);
         assert_eq!(parsed.window_maximized, None);
         assert_eq!(parsed.window_x, None);
+    }
+
+    /// A v2 session (no `tabs` array) must still load: the workspace comes back
+    /// with its single layout rather than being dropped.
+    #[test]
+    fn v2_session_loads_without_tabs() {
+        let v2 = r#"{
+            "version": 2,
+            "active_index": 0,
+            "workspaces": [{
+                "uuid": "u1",
+                "name": "old",
+                "active_pane_uuid": null,
+                "layout": {"type":"Leaf","pane_id":1000,
+                           "surface_uuid":"00000000-0000-0000-0000-000000000000",
+                           "shell":"/bin/sh","cwd":"/tmp"},
+                "cwd": "/tmp"
+            }]
+        }"#;
+        let parsed: SessionData = serde_json::from_str(v2).unwrap();
+        assert_eq!(parsed.version, 2);
+        assert_eq!(parsed.workspaces.len(), 1);
+        assert!(parsed.workspaces[0].tabs.is_empty(), "v2 has no tabs array");
+        assert_eq!(parsed.workspaces[0].active_tab, 0);
+    }
+
+    /// v3 round trip: every tab survives, along with which one was active and
+    /// whether its title was an explicit rename.
+    #[test]
+    fn v3_tabs_roundtrip() {
+        let leaf = |pane_id: u64| SplitNodeData::Leaf {
+            pane_id,
+            surface_uuid: uuid::Uuid::nil(),
+            shell: "/bin/sh".to_string(),
+            cwd: "/tmp".to_string(),
+        };
+        let mut data = dummy_session("ws");
+        data.version = 3;
+        data.workspaces[0].tabs = vec![
+            TabSession {
+                title: "cmux".to_string(),
+                renamed: false,
+                layout: leaf(1000),
+                active_pane_uuid: None,
+            },
+            TabSession {
+                title: "meu nome".to_string(),
+                renamed: true,
+                layout: leaf(2000),
+                active_pane_uuid: Some("p2".to_string()),
+            },
+        ];
+        data.workspaces[0].active_tab = 1;
+
+        let back: SessionData =
+            serde_json::from_str(&serde_json::to_string(&data).unwrap()).unwrap();
+        let ws = &back.workspaces[0];
+        assert_eq!(ws.tabs.len(), 2);
+        assert_eq!(ws.active_tab, 1);
+        assert!(!ws.tabs[0].renamed, "auto title must not be marked renamed");
+        assert!(ws.tabs[1].renamed, "explicit rename must survive restart");
+        assert_eq!(ws.tabs[1].title, "meu nome");
     }
 }

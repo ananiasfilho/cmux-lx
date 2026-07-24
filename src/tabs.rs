@@ -21,8 +21,12 @@ pub const PANE_ID_BLOCK: u64 = 1000;
 /// One tab: a split tree plus the label shown in the strip.
 pub struct Tab {
     pub engine: SplitEngine,
-    /// Display title. Defaults to "Tab N"; renaming is a follow-up.
+    /// Display title: an explicit rename, otherwise derived from the working
+    /// directory of the tab's active pane.
     pub title: String,
+    /// True once the user renames the tab, which pins the title so the
+    /// directory tracker stops overwriting it.
+    pub renamed: bool,
     /// Stack page name for this tab's split tree.
     page_name: String,
 }
@@ -98,6 +102,7 @@ impl WorkspaceTabs {
             tabs: vec![Tab {
                 engine,
                 title: "Tab 1".to_string(),
+                renamed: false,
                 page_name,
             }],
             active: 0,
@@ -170,7 +175,67 @@ impl WorkspaceTabs {
         }
         if let Some(tab) = self.tabs.get_mut(index) {
             tab.title = title.to_string();
+            tab.renamed = true;
         }
+        self.rebuild_strip();
+    }
+
+    /// Set a title derived from the working directory. Ignored for a tab the
+    /// user renamed, so an explicit name is never clobbered by a `cd`.
+    /// Returns true when the strip actually changed.
+    pub fn set_derived_title(&mut self, index: usize, title: &str) -> bool {
+        let title = title.trim();
+        if title.is_empty() {
+            return false;
+        }
+        match self.tabs.get_mut(index) {
+            Some(tab) if !tab.renamed && tab.title != title => {
+                tab.title = title.to_string();
+            }
+            _ => return false,
+        }
+        self.rebuild_strip();
+        true
+    }
+
+    /// Index of the tab whose split tree owns `pane_id`.
+    pub fn tab_index_for_pane(&self, pane_id: u64) -> Option<usize> {
+        self.tabs.iter().position(|t| {
+            let mut ids = Vec::new();
+            t.engine.root.collect_pane_ids(&mut ids);
+            ids.contains(&pane_id)
+        })
+    }
+
+    /// Serializable snapshot of every tab, for the session file.
+    pub fn to_session(&self) -> Vec<crate::session::TabSession> {
+        self.tabs
+            .iter()
+            .map(|t| crate::session::TabSession {
+                title: t.title.clone(),
+                renamed: t.renamed,
+                layout: t.engine.root.to_data(),
+                active_pane_uuid: t.engine.active_pane_uuid(),
+            })
+            .collect()
+    }
+
+    /// Append a restored tab, preserving its saved title and rename flag.
+    /// Unlike push_tab this does not steal focus or renumber.
+    pub fn push_restored_tab(&mut self, engine: SplitEngine, title: String, renamed: bool) {
+        let index = self.tabs.len();
+        let page_name = format!("tab-{}", index);
+        self.inner_stack
+            .add_named(&engine.root_widget(), Some(&page_name));
+        self.tabs.push(Tab {
+            engine,
+            title,
+            renamed,
+            page_name,
+        });
+        // Keep default numbering ahead of anything restored, so a new tab in a
+        // restored workspace does not collide with an existing "Tab 3".
+        self.next_tab_number = self.next_tab_number.max(self.tabs.len() + 1);
         self.rebuild_strip();
     }
 
@@ -225,6 +290,7 @@ impl WorkspaceTabs {
         self.tabs.push(Tab {
             engine,
             title,
+            renamed: false,
             page_name,
         });
         self.switch_to(index);

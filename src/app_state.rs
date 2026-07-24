@@ -306,7 +306,40 @@ impl AppState {
 
         // Add to stack
         let page_name = format!("workspace-{}", id);
-        let tabs = crate::tabs::WorkspaceTabs::new(engine);
+        let mut tabs = crate::tabs::WorkspaceTabs::new(engine);
+
+        // v3: rebuild the remaining tabs. `ws.tabs[0]` is the engine already
+        // built above from `ws.layout`, which is why restoration starts at 1 —
+        // v2 sessions have an empty `tabs` and simply skip this.
+        for (idx, tab) in ws.tabs.iter().enumerate().skip(1) {
+            match crate::split_engine::SplitEngine::from_data(
+                self.gtk_app.clone(),
+                self.ghostty_app,
+                &tab.layout,
+                tab.active_pane_uuid.as_deref(),
+                restore_cwd,
+            ) {
+                Some(engine) => {
+                    tabs.push_restored_tab(engine, tab.title.clone(), tab.renamed);
+                }
+                None => {
+                    // One unrestorable tab must not cost the whole workspace.
+                    eprintln!(
+                        "cmux: tab {} of workspace '{}' has an invalid layout; skipping it",
+                        idx, ws.name
+                    );
+                }
+            }
+        }
+        if let Some(first) = ws.tabs.first() {
+            if first.renamed {
+                tabs.set_title(0, &first.title);
+            }
+        }
+        if ws.active_tab < tabs.len() {
+            tabs.switch_to(ws.active_tab);
+        }
+
         self.stack.add_named(&tabs.root_widget(), Some(&page_name));
         workspace.stack_page_name = page_name;
 
@@ -936,11 +969,30 @@ impl AppState {
     /// are left untouched. Refreshes the sidebar title + subtitle in place and
     /// triggers a session save so the cwd persists across restarts.
     pub fn update_pane_pwd(&mut self, pane_id: u64, pwd: String) {
+        // Name the owning tab after its directory. "Tab 1 / Tab 2" says nothing
+        // once several are open; the directory is what tells them apart, and it
+        // is what cmux shows on macOS. Applies to background tabs too, so
+        // switching to one does not reveal a stale name. A tab the user renamed
+        // is pinned and left alone (see set_derived_title).
+        let derived = path_basename(&pwd);
+        if !derived.is_empty() {
+            for ws_idx in 0..self.workspace_tabs.len() {
+                let Some(tab_idx) = self.workspace_tabs[ws_idx].tab_index_for_pane(pane_id) else {
+                    continue;
+                };
+                if self.workspace_tabs[ws_idx].set_derived_title(tab_idx, &derived) {
+                    self.trigger_session_save();
+                }
+                break;
+            }
+        }
+
         // Locate the workspace whose split tree owns this pane.
         let mut target: Option<usize> = None;
         for (idx, tabs) in self.workspace_tabs.iter().enumerate() {
             let engine = tabs.active_engine();
-            // Only the active pane of the workspace sets the tab's directory.
+            // Only the active pane of the workspace sets the workspace's
+            // directory (and therefore the sidebar subtitle).
             if engine.active_pane_id != pane_id {
                 continue;
             }
@@ -1040,7 +1092,10 @@ impl AppState {
             // Snapshot session data on main thread where Rc<RefCell<AppState>> is safe.
             if let Some(ref tx) = self.session_tx {
                 let session = crate::session::SessionData {
-                    version: 2, // D-01: bump to version 2 for full tree serialization
+                    // v3 adds per-workspace tabs. Readers below v3 ignore the
+                    // `tabs` array and fall back to `layout`, so downgrading
+                    // costs the extra tabs but never the workspace.
+                    version: 3,
                     active_index: self.active_index,
                     workspaces: self.workspaces.iter().enumerate().map(|(i, ws)| {
                         // D-02: save full split tree for ALL workspaces
@@ -1061,11 +1116,24 @@ impl AppState {
                         } else {
                             None
                         };
+                        // v3: every tab. `layout` above still carries the
+                        // active tab, so an older build reading this file gets
+                        // a sane single-tab workspace instead of nothing.
+                        let (tabs, active_tab) = if i < self.workspace_tabs.len() {
+                            (
+                                self.workspace_tabs[i].to_session(),
+                                self.workspace_tabs[i].active_index(),
+                            )
+                        } else {
+                            (Vec::new(), 0)
+                        };
                         crate::session::WorkspaceSession {
                             uuid: ws.uuid.to_string(),
                             name: ws.name.clone(),
                             active_pane_uuid,
                             layout,
+                            tabs,
+                            active_tab,
                             cwd: ws.cwd.clone(),
                         }
                     }).collect(),
