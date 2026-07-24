@@ -366,19 +366,29 @@ pub fn register_actions(
 
 /// Register keyboard accelerators for GIO actions so menus show shortcut hints.
 /// Per Pitfall 3 from RESEARCH.md: GTK4 shows accels in menus ONLY if registered via set_accels_for_action.
-pub fn register_accels(app: &gtk4::Application) {
-    app.set_accels_for_action("win.new-workspace", &["<Ctrl>n"]);
-    app.set_accels_for_action("win.close-workspace", &["<Ctrl><Shift>w"]);
-    app.set_accels_for_action("win.new-ssh-workspace", &["<Ctrl><Shift>s"]);
-    app.set_accels_for_action("win.browser-open", &["<Ctrl><Shift>b"]);
-    app.set_accels_for_action("win.close-pane", &["<Ctrl><Shift>x"]);
-    app.set_accels_for_action("win.toggle-sidebar", &["<Ctrl>b"]);
-    app.set_accels_for_action("win.split-right", &["<Ctrl>d"]);
-    app.set_accels_for_action("win.split-down", &["<Ctrl><Shift>d"]);
+///
+/// Accelerators come from the resolved config, NOT from literals. GTK dispatches
+/// its accel table before the surface key controller sees the event, so any
+/// action hard-coded here would override the user's `config.toml` binding and
+/// leave the config silently inert — which is what happened with `Ctrl+D`
+/// (split-right) still firing after being rebound.
+pub fn register_accels(app: &gtk4::Application, shortcuts: &crate::config::ShortcutConfig) {
+    use crate::config::{resolved_accel, ShortcutAction};
+
+    for &action in ShortcutAction::ALL {
+        let Some(gio_name) = action.gio_action() else {
+            continue;
+        };
+        let accel = resolved_accel(shortcuts, action);
+        app.set_accels_for_action(gio_name, &[accel.as_str()]);
+    }
+
+    // Not yet exposed in ShortcutConfig — these still shadow terminal keys
+    // (Ctrl+F is readline forward-char / vim page-down, Ctrl+Q is XON flow
+    // control). Making them bindable is a follow-up.
     app.set_accels_for_action("win.copy", &["<Ctrl><Shift>c"]);
     app.set_accels_for_action("win.paste", &["<Ctrl><Shift>v"]);
     app.set_accels_for_action("win.find", &["<Ctrl>f"]);
-    app.set_accels_for_action("win.rename-workspace", &["<Ctrl><Shift>r"]);
     app.set_accels_for_action("app.quit", &["<Ctrl>q"]);
 }
 

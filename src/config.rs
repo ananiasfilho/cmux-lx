@@ -195,54 +195,157 @@ fn warn_unknown_shortcuts(content: &str) {
     }
 }
 
+impl ShortcutAction {
+    /// Every bindable action, in a stable order.
+    pub const ALL: &'static [ShortcutAction] = &[
+        ShortcutAction::NewWorkspace,
+        ShortcutAction::CloseWorkspace,
+        ShortcutAction::NextWorkspace,
+        ShortcutAction::PrevWorkspace,
+        ShortcutAction::RenameWorkspace,
+        ShortcutAction::ToggleSidebar,
+        ShortcutAction::SplitRight,
+        ShortcutAction::SplitDown,
+        ShortcutAction::ClosePane,
+        ShortcutAction::NewSshWorkspace,
+        ShortcutAction::FocusLeft,
+        ShortcutAction::FocusRight,
+        ShortcutAction::FocusUp,
+        ShortcutAction::FocusDown,
+        ShortcutAction::Workspace1,
+        ShortcutAction::Workspace2,
+        ShortcutAction::Workspace3,
+        ShortcutAction::Workspace4,
+        ShortcutAction::Workspace5,
+        ShortcutAction::Workspace6,
+        ShortcutAction::Workspace7,
+        ShortcutAction::Workspace8,
+        ShortcutAction::Workspace9,
+        ShortcutAction::BrowserOpen,
+        ShortcutAction::BrowserClose,
+    ];
+
+    /// Built-in accelerator used when the config does not override it.
+    pub fn default_accel(self) -> &'static str {
+        use ShortcutAction::*;
+        match self {
+            NewWorkspace => "<Ctrl>n",
+            CloseWorkspace => "<Ctrl><Shift>w",
+            NextWorkspace => "<Ctrl>bracketright",
+            PrevWorkspace => "<Ctrl>bracketleft",
+            RenameWorkspace => "<Ctrl><Shift>r",
+            ToggleSidebar => "<Ctrl>b",
+            SplitRight => "<Ctrl>d",
+            SplitDown => "<Ctrl><Shift>d",
+            ClosePane => "<Ctrl><Shift>x",
+            NewSshWorkspace => "<Ctrl><Shift>s",
+            FocusLeft => "<Ctrl><Shift>Left",
+            FocusRight => "<Ctrl><Shift>Right",
+            FocusUp => "<Ctrl><Shift>Up",
+            FocusDown => "<Ctrl><Shift>Down",
+            Workspace1 => "<Ctrl>1",
+            Workspace2 => "<Ctrl>2",
+            Workspace3 => "<Ctrl>3",
+            Workspace4 => "<Ctrl>4",
+            Workspace5 => "<Ctrl>5",
+            Workspace6 => "<Ctrl>6",
+            Workspace7 => "<Ctrl>7",
+            Workspace8 => "<Ctrl>8",
+            Workspace9 => "<Ctrl>9",
+            BrowserOpen => "<Ctrl><Shift>b",
+            BrowserClose => "<Ctrl><Shift>q",
+        }
+    }
+
+    /// The GIO action this shortcut also dispatches through the menu system,
+    /// when there is one. GTK resolves its own accel table before the widget
+    /// key controller runs, so any action listed here MUST be registered with
+    /// the same accelerator the ShortcutMap uses — otherwise the hard-coded
+    /// GTK accel fires first and the user's config is silently dead.
+    pub fn gio_action(self) -> Option<&'static str> {
+        use ShortcutAction::*;
+        match self {
+            NewWorkspace => Some("win.new-workspace"),
+            CloseWorkspace => Some("win.close-workspace"),
+            NewSshWorkspace => Some("win.new-ssh-workspace"),
+            BrowserOpen => Some("win.browser-open"),
+            ClosePane => Some("win.close-pane"),
+            ToggleSidebar => Some("win.toggle-sidebar"),
+            SplitRight => Some("win.split-right"),
+            SplitDown => Some("win.split-down"),
+            RenameWorkspace => Some("win.rename-workspace"),
+            // Handled solely by the key controller — no menu entry.
+            NextWorkspace | PrevWorkspace | BrowserClose => None,
+            FocusLeft | FocusRight | FocusUp | FocusDown => None,
+            Workspace1 | Workspace2 | Workspace3 | Workspace4 | Workspace5 => None,
+            Workspace6 | Workspace7 | Workspace8 | Workspace9 => None,
+        }
+    }
+
+    /// The user's override for this action, if the config sets one.
+    fn configured_accel(self, config: &ShortcutConfig) -> Option<&str> {
+        use ShortcutAction::*;
+        match self {
+            NewWorkspace => config.new_workspace.as_deref(),
+            CloseWorkspace => config.close_workspace.as_deref(),
+            NextWorkspace => config.next_workspace.as_deref(),
+            PrevWorkspace => config.prev_workspace.as_deref(),
+            RenameWorkspace => config.rename_workspace.as_deref(),
+            ToggleSidebar => config.toggle_sidebar.as_deref(),
+            SplitRight => config.split_right.as_deref(),
+            SplitDown => config.split_down.as_deref(),
+            ClosePane => config.close_pane.as_deref(),
+            NewSshWorkspace => config.new_ssh_workspace.as_deref(),
+            FocusLeft => config.focus_left.as_deref(),
+            FocusRight => config.focus_right.as_deref(),
+            FocusUp => config.focus_up.as_deref(),
+            FocusDown => config.focus_down.as_deref(),
+            Workspace1 => config.workspace_1.as_deref(),
+            Workspace2 => config.workspace_2.as_deref(),
+            Workspace3 => config.workspace_3.as_deref(),
+            Workspace4 => config.workspace_4.as_deref(),
+            Workspace5 => config.workspace_5.as_deref(),
+            Workspace6 => config.workspace_6.as_deref(),
+            Workspace7 => config.workspace_7.as_deref(),
+            Workspace8 => config.workspace_8.as_deref(),
+            Workspace9 => config.workspace_9.as_deref(),
+            BrowserOpen => config.browser_open.as_deref(),
+            BrowserClose => config.browser_close.as_deref(),
+        }
+    }
+}
+
+/// Resolves the accelerator actually in force for an action: the config value
+/// when it parses, otherwise the built-in default (D-11 warns on invalid).
+///
+/// Single source of truth for BOTH the key-controller lookup table and the GTK
+/// accel registration in `menus::register_accels`. Keeping these in sync is not
+/// cosmetic: GTK's accel table wins over the widget key controller, so a
+/// divergence means the config silently does nothing.
+pub fn resolved_accel(config: &ShortcutConfig, action: ShortcutAction) -> String {
+    let default_accel = action.default_accel();
+    match action.configured_accel(config) {
+        None => default_accel.to_string(),
+        Some(accel) if gtk4::accelerator_parse(accel).is_some() => accel.to_string(),
+        Some(bad) => {
+            eprintln!(
+                "cmux: invalid shortcut '{}' for {:?}, using default '{}'",
+                bad, action, default_accel
+            );
+            default_accel.to_string()
+        }
+    }
+}
+
 impl ShortcutMap {
     /// Build lookup table from config, falling back to defaults for unset/invalid entries.
     pub fn from_config(config: &ShortcutConfig) -> Self {
-        let entries: &[(ShortcutAction, &Option<String>, &str)] = &[
-            (ShortcutAction::NewWorkspace,    &config.new_workspace,    "<Ctrl>n"),
-            (ShortcutAction::CloseWorkspace,  &config.close_workspace,  "<Ctrl><Shift>w"),
-            (ShortcutAction::NextWorkspace,   &config.next_workspace,   "<Ctrl>bracketright"),
-            (ShortcutAction::PrevWorkspace,   &config.prev_workspace,   "<Ctrl>bracketleft"),
-            (ShortcutAction::RenameWorkspace, &config.rename_workspace, "<Ctrl><Shift>r"),
-            (ShortcutAction::ToggleSidebar,   &config.toggle_sidebar,   "<Ctrl>b"),
-            (ShortcutAction::SplitRight,      &config.split_right,      "<Ctrl>d"),
-            (ShortcutAction::SplitDown,       &config.split_down,       "<Ctrl><Shift>d"),
-            (ShortcutAction::ClosePane,       &config.close_pane,       "<Ctrl><Shift>x"),
-            (ShortcutAction::NewSshWorkspace, &config.new_ssh_workspace, "<Ctrl><Shift>s"),
-            (ShortcutAction::FocusLeft,       &config.focus_left,       "<Ctrl><Shift>Left"),
-            (ShortcutAction::FocusRight,      &config.focus_right,      "<Ctrl><Shift>Right"),
-            (ShortcutAction::FocusUp,         &config.focus_up,         "<Ctrl><Shift>Up"),
-            (ShortcutAction::FocusDown,       &config.focus_down,       "<Ctrl><Shift>Down"),
-            (ShortcutAction::Workspace1,      &config.workspace_1,      "<Ctrl>1"),
-            (ShortcutAction::Workspace2,      &config.workspace_2,      "<Ctrl>2"),
-            (ShortcutAction::Workspace3,      &config.workspace_3,      "<Ctrl>3"),
-            (ShortcutAction::Workspace4,      &config.workspace_4,      "<Ctrl>4"),
-            (ShortcutAction::Workspace5,      &config.workspace_5,      "<Ctrl>5"),
-            (ShortcutAction::Workspace6,      &config.workspace_6,      "<Ctrl>6"),
-            (ShortcutAction::Workspace7,      &config.workspace_7,      "<Ctrl>7"),
-            (ShortcutAction::Workspace8,      &config.workspace_8,      "<Ctrl>8"),
-            (ShortcutAction::Workspace9,      &config.workspace_9,      "<Ctrl>9"),
-            (ShortcutAction::BrowserOpen,     &config.browser_open,     "<Ctrl><Shift>b"),
-            (ShortcutAction::BrowserClose,    &config.browser_close,    "<Ctrl><Shift>q"),
-        ];
-
         let mut map = HashMap::new();
 
-        for (action, config_val, default_accel) in entries {
-            let accel_str = config_val.as_deref().unwrap_or(*default_accel);
-            let action_name = format!("{:?}", action);
-
-            if let Some((key, mods)) = gtk4::accelerator_parse(accel_str) {
-                map.insert((mods & MOD_MASK, key), *action);
-            } else {
-                // D-11: invalid accelerator — warn and use default
-                eprintln!(
-                    "cmux: invalid shortcut '{}' for {}, using default '{}'",
-                    accel_str, action_name, default_accel
-                );
-                if let Some((key, mods)) = gtk4::accelerator_parse(*default_accel) {
-                    map.insert((mods & MOD_MASK, key), *action);
-                }
+        for &action in ShortcutAction::ALL {
+            let accel_str = resolved_accel(config, action);
+            if let Some((key, mods)) = gtk4::accelerator_parse(&accel_str) {
+                map.insert((mods & MOD_MASK, key), action);
             }
         }
 
@@ -380,5 +483,77 @@ buttons_right = ["split_right", "toggle_sidebar"]
         assert_eq!(smap.lookup(ModifierType::CONTROL_MASK, Key::t), Some(ShortcutAction::NewWorkspace));
         // Ctrl+N should no longer map to NewWorkspace
         assert_eq!(smap.lookup(ModifierType::CONTROL_MASK, Key::n), None);
+    }
+
+    /// Regression: a rebound action must report the SAME accelerator to the
+    /// key controller and to the GTK accel table.
+    ///
+    /// `menus::register_accels` used to hard-code `<Ctrl>d` for
+    /// `win.split-right`. GTK resolves its accel table before the surface key
+    /// controller sees the event, so rebinding `split_right` in config.toml
+    /// changed the ShortcutMap but Ctrl+D still split the pane — and Ctrl+D is
+    /// EOF, so the terminal was unusable. Both sides now read `resolved_accel`.
+    #[test]
+    fn test_resolved_accel_is_shared_with_gio_actions() {
+        if gtk4::init().is_err() {
+            eprintln!("Skipping test_resolved_accel_is_shared_with_gio_actions: GTK4 init failed (headless)");
+            return;
+        }
+        let config = ShortcutConfig {
+            split_right: Some("<Ctrl><Shift>d".to_string()),
+            ..Default::default()
+        };
+
+        // The accel handed to set_accels_for_action must be the configured one.
+        assert_eq!(resolved_accel(&config, ShortcutAction::SplitRight), "<Ctrl><Shift>d");
+        assert_eq!(ShortcutAction::SplitRight.gio_action(), Some("win.split-right"));
+
+        // ...and the key controller must agree, so Ctrl+D reaches the terminal.
+        let smap = ShortcutMap::from_config(&config);
+        assert_eq!(
+            smap.lookup(ModifierType::CONTROL_MASK | ModifierType::SHIFT_MASK, Key::D),
+            Some(ShortcutAction::SplitRight)
+        );
+        assert_eq!(
+            smap.lookup(ModifierType::CONTROL_MASK, Key::d),
+            None,
+            "Ctrl+D must stay free for the shell (EOF)"
+        );
+    }
+
+    /// An invalid accelerator falls back to the default rather than leaving the
+    /// action unbound — and the fallback is the same on both sides.
+    #[test]
+    fn test_resolved_accel_falls_back_on_invalid() {
+        if gtk4::init().is_err() {
+            eprintln!("Skipping test_resolved_accel_falls_back_on_invalid: GTK4 init failed (headless)");
+            return;
+        }
+        let config = ShortcutConfig {
+            toggle_sidebar: Some("not-an-accelerator".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolved_accel(&config, ShortcutAction::ToggleSidebar),
+            ShortcutAction::ToggleSidebar.default_accel()
+        );
+    }
+
+    /// Every action that drives a GIO action must resolve to a parseable accel,
+    /// otherwise `register_accels` would register an empty binding and the menu
+    /// item would become unreachable by keyboard.
+    #[test]
+    fn test_all_gio_actions_have_parseable_defaults() {
+        if gtk4::init().is_err() {
+            eprintln!("Skipping test_all_gio_actions_have_parseable_defaults: GTK4 init failed (headless)");
+            return;
+        }
+        for &action in ShortcutAction::ALL {
+            let accel = resolved_accel(&ShortcutConfig::default(), action);
+            assert!(
+                gtk4::accelerator_parse(&accel).is_some(),
+                "default accel {accel:?} for {action:?} does not parse"
+            );
+        }
     }
 }
