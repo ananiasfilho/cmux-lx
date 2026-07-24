@@ -136,7 +136,7 @@ Architecture: amd64
 Maintainer: leeb003 <lee@scripthat.com>
 Section: x11
 Priority: optional
-Depends: libgtk-4-1, libfontconfig1, libfreetype6, libonig5, libgl1, libegl1, libharfbuzz0b, libcairo2, libpango-1.0-0, libpangocairo-1.0-0, libpangoft2-1.0-0, libepoxy0, libxkbcommon0, libglib2.0-0t64 | libglib2.0-0, libgraphene-1.0-0t64 | libgraphene-1.0-0
+Depends: libgtk-4-1, libfontconfig1, libfreetype6, libonig5, libgl1, libegl1, libharfbuzz0b, libcairo2, libpango-1.0-0, libpangocairo-1.0-0, libpangoft2-1.0-0, libepoxy0, libxkbcommon0, libglib2.0-0t64 | libglib2.0-0, libgraphene-1.0-0t64 | libgraphene-1.0-0, libc++1 | libc++1-18, libc++abi1 | libc++abi1-18, libunwind-18 | libunwind8
 Recommends: curl, jq, unzip, libnss3, libnspr4, libdrm2, libxcomposite1, libxdamage1, libxfixes3, libxrandr2, libgbm1, libasound2t64 | libasound2, libcups2t64 | libcups2, libatk1.0-0t64 | libatk1.0-0, libatk-bridge2.0-0t64 | libatk-bridge2.0-0, libdbus-1-3t64 | libdbus-1-3
 Suggests: chromium
 Homepage: https://github.com/leeb003/cmux-lx
@@ -145,6 +145,57 @@ Description: GPU-accelerated terminal for AI coding agents (Linux)
  pane, and socket CLI control, powered by Ghostty's GPU-accelerated
  terminal rendering. Hardened Linux-only fork; see /usr/share/doc.
 CTRL
+
+# Verify the declared Depends actually covers what the binary links against.
+# The list above is maintained by hand, so it drifts: the 0.1.0 release shipped
+# without libc++1/libc++abi1/libunwind and would not start on a clean Debian or
+# Ubuntu box — the loader failed on libc++.so.1 before main() ran. Derive the
+# truth from ldd instead of trusting the list.
+if command -v dpkg &>/dev/null && command -v objdump &>/dev/null; then
+    # `|| true` throughout: the script runs under `set -euo pipefail`, and both
+    # grep and dpkg -S exit non-zero on "no match", which is a normal outcome here.
+    # Split the Depends line into plain package tokens. Compared literally,
+    # never as regex: names like libc++1 contain regex metacharacters.
+    mapfile -t DECLARED_PKGS < <(
+        grep '^Depends:' "$PKG_ROOT/DEBIAN/control" \
+            | sed 's/^Depends://' | tr ',|' '\n\n' | tr -d ' ' | grep -v '^$' || true
+    )
+    MISSING=()
+    # Skip the C runtime and friends: always present, never packaged as deps.
+    SKIP='^(libc\.so|libm\.so|libpthread|libdl|librt\.so|linux-vdso|ld-linux|libgcc_s|libstdc\+\+)'
+    # Only DIRECT links (ELF DT_NEEDED). ldd would report the whole transitive
+    # closure, and Debian policy is that transitive libraries come in through
+    # the declared packages' own Depends — listing them here would be noise.
+    RESOLVED=$(ldd "$CMUX_APP" 2>/dev/null || true)
+    while read -r soname; do
+        [[ -z "$soname" ]] && continue
+        path=$(awk -v s="$soname" '$1 == s && $3 != "" {print $3; exit}' <<< "$RESOLVED")
+        [[ -z "$path" || ! -e "$path" ]] && continue
+        pkg=$(dpkg -S "$(readlink -f "$path")" 2>/dev/null | cut -d: -f1 | head -1 || true)
+        [[ -z "$pkg" ]] && continue
+        # Accept either the concrete package or a virtual/meta alternative
+        # sharing its stem (libc++1-18 is satisfied by libc++1, etc.).
+        stem=${pkg%-[0-9]*}
+        found=0
+        for declared in ${DECLARED_PKGS[@]+"${DECLARED_PKGS[@]}"}; do
+            if [[ "$declared" == "$pkg" || "$declared" == "$stem" ]]; then
+                found=1
+                break
+            fi
+        done
+        if (( found == 0 )); then
+            MISSING+=("$soname -> $pkg")
+        fi
+    done < <(objdump -p "$CMUX_APP" 2>/dev/null | awk '/NEEDED/{print $2}' | grep -vE "$SKIP" || true)
+
+    if (( ${#MISSING[@]} > 0 )); then
+        echo "ERROR: cmux-app links libraries not declared in Depends:" >&2
+        printf '  %s\n' "${MISSING[@]}" >&2
+        echo "Add them to the Depends line in $0, or the package will fail to start on a clean system." >&2
+        exit 1
+    fi
+    echo "Depends check: every linked library is declared."
+fi
 
 # Build the .deb
 DEB_FILE="$OUTPUT_DIR/cmux_${VERSION}_amd64.deb"
