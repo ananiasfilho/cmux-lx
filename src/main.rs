@@ -310,12 +310,32 @@ fn build_ui(
     }
 
     // 3. Build the window layout
+    // Geometry from the previous run. Sessions written before geometry was
+    // tracked have None here and fall back to the built-in default.
+    let restored_geometry = saved_session.as_ref().map(|s| {
+        (
+            s.window_width.unwrap_or(crate::app_state::DEFAULT_WINDOW_WIDTH),
+            s.window_height.unwrap_or(crate::app_state::DEFAULT_WINDOW_HEIGHT),
+            s.window_maximized.unwrap_or(false),
+        )
+    });
+    let (init_w, init_h, init_max) = restored_geometry.unwrap_or((
+        crate::app_state::DEFAULT_WINDOW_WIDTH,
+        crate::app_state::DEFAULT_WINDOW_HEIGHT,
+        false,
+    ));
+
     let window = ApplicationWindow::builder()
         .application(app)
         .title("cmux-lx")
-        .default_width(800)
-        .default_height(600)
+        // Guard against a zero/negative size persisted by a compositor quirk:
+        // GTK would refuse it and the window would come up unusably small.
+        .default_width(init_w.max(320))
+        .default_height(init_h.max(240))
         .build();
+    if init_max {
+        window.maximize();
+    }
 
     let (sidebar_box, _sidebar_scroll, sidebar_list) = crate::sidebar::build_sidebar();
     let stack = gtk4::Stack::new();
@@ -384,6 +404,29 @@ fn build_ui(
         });
     }
 
+    // Persist window geometry. default-width/height track the *unmaximized*
+    // size, which is what should be restored when the window is un-maximized
+    // later; the maximized flag is stored separately.
+    {
+        let state = state.clone();
+        let record = move |w: &ApplicationWindow| {
+            let maximized = w.is_maximized();
+            let (width, height) = (w.default_width(), w.default_height());
+            let mut s = state.borrow_mut();
+            if s.window_width != width || s.window_height != height || s.window_maximized != maximized
+            {
+                s.window_width = width;
+                s.window_height = height;
+                s.window_maximized = maximized;
+                s.trigger_session_save();
+            }
+        };
+        for prop in ["default-width", "default-height", "maximized"] {
+            let record = record.clone();
+            window.connect_notify_local(Some(prop), move |w, _| record(w));
+        }
+    }
+
     // Wire sidebar click-to-switch.
     crate::sidebar::wire_sidebar_clicks(&sidebar_list, state.clone());
 
@@ -412,14 +455,6 @@ fn build_ui(
                         // D-15: tree invalid or too deep, fall back to single pane
                         eprintln!("cmux: workspace '{}' tree invalid, creating default", ws_session.name);
                         state.borrow_mut().create_workspace();
-    let idx = state.borrow().workspaces.len().saturating_sub(1);
-    crate::app_state::AppState::wire_tab_strip(&state, idx);
-            let idx = state.borrow().workspaces.len().saturating_sub(1);
-            crate::app_state::AppState::wire_tab_strip(&state, idx);
-                    let idx = state.borrow().workspaces.len().saturating_sub(1);
-                    crate::app_state::AppState::wire_tab_strip(&state, idx);
-                        let idx = state.borrow().workspaces.len().saturating_sub(1);
-                        crate::app_state::AppState::wire_tab_strip(&state, idx);
                         state.borrow_mut().rename_active(ws_session.name.clone());
                     }
                 }
@@ -428,12 +463,6 @@ fn build_ui(
                 // Version 1: name-only restore (auto-upgrade on next save per D-01)
                 for ws_session in &session.workspaces {
                     state.borrow_mut().create_workspace();
-    let idx = state.borrow().workspaces.len().saturating_sub(1);
-    crate::app_state::AppState::wire_tab_strip(&state, idx);
-            let idx = state.borrow().workspaces.len().saturating_sub(1);
-            crate::app_state::AppState::wire_tab_strip(&state, idx);
-                    let idx = state.borrow().workspaces.len().saturating_sub(1);
-                    crate::app_state::AppState::wire_tab_strip(&state, idx);
                     state.borrow_mut().rename_active(ws_session.name.clone());
                 }
             }
@@ -456,10 +485,6 @@ fn build_ui(
         } else {
             // No session -- create the default first workspace.
             state.borrow_mut().create_workspace();
-    let idx = state.borrow().workspaces.len().saturating_sub(1);
-    crate::app_state::AppState::wire_tab_strip(&state, idx);
-            let idx = state.borrow().workspaces.len().saturating_sub(1);
-            crate::app_state::AppState::wire_tab_strip(&state, idx);
         }
     }
 
@@ -722,6 +747,12 @@ fn build_ui(
     // Phase 9: Register GIO actions for menu/button dispatch
     crate::menus::register_actions(&window, state.clone(), &sidebar_box, app);
     crate::menus::register_accels(app, &config.shortcuts);
+
+    // Wire every workspace's tab strip. Done as a sweep rather than at each
+    // creation site: restore_workspace() is a separate path from
+    // create_workspace(), and missing it left restored workspaces with dead tab
+    // buttons and an F2 rename that could not be committed or cancelled.
+    crate::app_state::AppState::wire_all_tab_strips(&state);
 
     // 7. Install keyboard shortcuts (config-driven, D-06)
     crate::shortcuts::install_shortcuts(&window, state.clone(), &sidebar_box, app, shortcut_map);

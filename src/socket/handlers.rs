@@ -168,6 +168,7 @@ pub fn handle_socket_command(
             } else {
                 // Local workspace (existing behavior)
                 let id = state.borrow_mut().create_workspace();
+                crate::app_state::AppState::wire_all_tab_strips(state);
                 let s = state.borrow();
                 let uuid_str = s.workspaces.iter()
                     .find(|ws| ws.id == id)

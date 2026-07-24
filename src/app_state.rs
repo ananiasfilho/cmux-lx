@@ -118,7 +118,16 @@ pub struct AppState {
     /// Current sidebar width in px (GtkPaned divider position). Updated as the
     /// user drags the divider; persisted in the session so it survives restarts.
     pub sidebar_width: i32,
+    /// Window geometry, refreshed as the window is resized so the session
+    /// snapshot always carries the current size rather than the startup default.
+    pub window_width: i32,
+    pub window_height: i32,
+    pub window_maximized: bool,
 }
+
+/// Default window size when no session value is restored.
+pub const DEFAULT_WINDOW_WIDTH: i32 = 800;
+pub const DEFAULT_WINDOW_HEIGHT: i32 = 600;
 
 /// Default sidebar width (px) when no session value is restored.
 pub const DEFAULT_SIDEBAR_WIDTH: i32 = 170;
@@ -157,6 +166,9 @@ impl AppState {
             browser_surface_counter: 0,
             browser_surface_refs: std::collections::HashMap::new(),
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
+            window_width: DEFAULT_WINDOW_WIDTH,
+            window_height: DEFAULT_WINDOW_HEIGHT,
+            window_maximized: false,
         };
         Rc::new(RefCell::new(state))
     }
@@ -650,6 +662,15 @@ impl AppState {
         }
     }
 
+    /// Wire the tab strip of every existing workspace. Call after any batch of
+    /// workspace creation or restoration.
+    pub fn wire_all_tab_strips(state: &AppStateRef) {
+        let count = state.borrow().workspace_tabs.len();
+        for idx in 0..count {
+            Self::wire_tab_strip(state, idx);
+        }
+    }
+
     /// Start renaming the active tab (F2, or double-click on the tab).
     pub fn begin_rename_active_tab(&mut self) {
         let idx = self.active_index;
@@ -1026,6 +1047,9 @@ impl AppState {
                         }
                     }).collect(),
                     sidebar_width: Some(self.sidebar_width),
+                    window_width: Some(self.window_width),
+                    window_height: Some(self.window_height),
+                    window_maximized: Some(self.window_maximized),
                 };
                 let _ = tx.send(session);
             }

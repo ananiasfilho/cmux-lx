@@ -354,6 +354,20 @@ impl ShortcutAction {
     }
 }
 
+/// Canonicalize keyvals that X11/XKB reports differently from what
+/// `accelerator_parse` stores.
+///
+/// Shift+Tab does not arrive as Tab+SHIFT: the layout produces the distinct
+/// keysym ISO_Left_Tab. `accelerator_parse("<Ctrl><Shift>Tab")` yields
+/// (Tab, CTRL|SHIFT), so a literal lookup never matched and Ctrl+Shift+Tab
+/// silently did nothing.
+fn normalize_key(key: Key) -> Key {
+    match key {
+        Key::ISO_Left_Tab => Key::Tab,
+        other => other,
+    }
+}
+
 /// Resolves the accelerator actually in force for an action: the config value
 /// when it parses, otherwise the built-in default (D-11 warns on invalid).
 ///
@@ -407,7 +421,7 @@ impl ShortcutMap {
     /// with the Shift modifier flag (e.g. Key::r + SHIFT_MASK).
     pub fn lookup(&self, mods: ModifierType, key: Key) -> Option<ShortcutAction> {
         let masked = mods & MOD_MASK;
-        let lower_key = key.to_lower();
+        let lower_key = normalize_key(key.to_lower());
         self.map.get(&(masked, lower_key)).copied()
     }
 }
@@ -564,6 +578,22 @@ buttons_right = ["split_right", "toggle_sidebar"]
             smap.lookup(ModifierType::CONTROL_MASK, Key::d),
             None,
             "Ctrl+D must stay free for the shell (EOF)"
+        );
+
+        // Shift+Tab arrives as ISO_Left_Tab, not Tab+SHIFT. Without
+        // normalization Ctrl+Shift+Tab resolved to nothing at all.
+        let smap = ShortcutMap::from_config(&ShortcutConfig::default());
+        assert_eq!(
+            smap.lookup(
+                ModifierType::CONTROL_MASK | ModifierType::SHIFT_MASK,
+                Key::ISO_Left_Tab
+            ),
+            Some(ShortcutAction::PrevWorkspace),
+            "Ctrl+Shift+Tab must reach PrevWorkspace despite the ISO_Left_Tab keysym"
+        );
+        assert_eq!(
+            smap.lookup(ModifierType::CONTROL_MASK, Key::Tab),
+            Some(ShortcutAction::NextWorkspace)
         );
 
         // An invalid accelerator falls back to the default on both sides

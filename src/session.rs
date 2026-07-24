@@ -29,6 +29,14 @@ pub struct SessionData {
     /// to the default width.
     #[serde(default)]
     pub sidebar_width: Option<i32>,
+    /// Window geometry at last save. `None` in sessions written before this was
+    /// tracked, in which case restore keeps the built-in default size.
+    #[serde(default)]
+    pub window_width: Option<i32>,
+    #[serde(default)]
+    pub window_height: Option<i32>,
+    #[serde(default)]
+    pub window_maximized: Option<bool>,
 }
 
 /// Returns the session file path.
@@ -119,6 +127,9 @@ mod tests {
                 cwd: "/tmp".to_string(),
             }],
             sidebar_width: None,
+            window_width: None,
+            window_height: None,
+            window_maximized: None,
         }
     }
 
@@ -182,5 +193,31 @@ mod tests {
         let path = std::path::PathBuf::from("/tmp/cmux-nonexistent-session-xyz.json");
         let result = load_session_from(&path);
         assert!(result.is_none(), "load_session_from must return None for missing file");
+    }
+
+    /// Geometry must survive a save/load round trip, and a session written
+    /// before geometry existed must still load (serde default -> None) rather
+    /// than failing and discarding every workspace.
+    #[test]
+    fn geometry_roundtrip_and_backcompat() {
+        let data = SessionData {
+            version: 2,
+            active_index: 0,
+            workspaces: Vec::new(),
+            sidebar_width: Some(200),
+            window_width: Some(1440),
+            window_height: Some(900),
+            window_maximized: Some(true),
+        };
+        let json = serde_json::to_string(&data).unwrap();
+        let back: SessionData = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.window_width, Some(1440));
+        assert_eq!(back.window_height, Some(900));
+        assert_eq!(back.window_maximized, Some(true));
+
+        let legacy = r#"{"version":2,"active_index":0,"workspaces":[]}"#;
+        let parsed: SessionData = serde_json::from_str(legacy).unwrap();
+        assert_eq!(parsed.window_width, None);
+        assert_eq!(parsed.window_maximized, None);
     }
 }
