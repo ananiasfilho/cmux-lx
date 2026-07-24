@@ -90,6 +90,18 @@ else
     exit 1
 fi
 
+SESSION_FILE="$XDG_DATA_HOME/cmux/session.json"
+tab_count() {
+    python3 - "$SESSION_FILE" <<'PYC' 2>/dev/null || echo 0
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    print(0); sys.exit()
+print(max((len(w.get("tabs", [])) for w in d.get("workspaces", [])), default=0))
+PYC
+}
+
 criticals() { grep -cE "Gtk-CRITICAL|Gdk-CRITICAL|GLib-CRITICAL" "$LOG" 2>/dev/null | head -1; }
 if [[ "$(criticals)" -eq 0 ]]; then
     pass "no GTK criticals at startup"
@@ -105,7 +117,7 @@ else
     # `search --pid X --name Y` happily returns a window matching only the
     # NAME — i.e. a cmux the user already had open. Without this the test
     # types into and clicks on the user's window instead of its own.
-    WID=$(xdotool search --all --sync --pid "$APP_PID" --name "^cmux-lx$" 2>/dev/null | head -1)
+    WID=$(timeout 10 xdotool search --all --pid "$APP_PID" --name "^cmux-lx$" 2>/dev/null | head -1)
     if [[ -z "$WID" ]]; then
         fail "window not found by name"
     else
@@ -121,18 +133,6 @@ else
                 [[ "$(xdotool getactivewindow 2>/dev/null)" == "$WID" ]] && return 0
             done
             return 1
-        }
-
-        SESSION_FILE="$XDG_DATA_HOME/cmux/session.json"
-        tab_count() {
-            python3 - "$SESSION_FILE" <<'PYC' 2>/dev/null || echo 0
-import json, sys
-try:
-    d = json.load(open(sys.argv[1]))
-except Exception:
-    print(0); sys.exit()
-print(max((len(w.get("tabs", [])) for w in d.get("workspaces", [])), default=0))
-PYC
         }
 
         if ! focus_window; then
@@ -250,6 +250,39 @@ PY
     fi
 else
     skip "session file not written yet"
+fi
+
+# The round trip, which is the only thing that proves persistence. Checking
+# the file the app wrote is not enough: writing v3 while the loader still
+# rejected anything above v2 produced a perfectly valid file that the next
+# launch discarded — and discarding it overwrites it, so every workspace was
+# lost. That shipped because this test stopped at "the file looks right".
+BEFORE=$(tab_count 2>/dev/null || echo 0)
+if [[ "$BEFORE" -ge 2 ]]; then
+    kill "$APP_PID" 2>/dev/null
+    for _ in $(seq 1 20); do alive || break; sleep 0.5; done
+    kill -9 "$APP_PID" 2>/dev/null
+    rm -f "$SOCKET"
+
+    "$CMUX_APP" > "$WORKDIR/cmux2.log" 2>&1 &
+    APP_PID=$!
+    for _ in $(seq 1 30); do
+        [[ -S "$SOCKET" ]] && break
+        sleep 0.5
+    done
+    sleep 2
+
+    if grep -q "not supported, ignoring" "$WORKDIR/cmux2.log"; then
+        fail "restart rejected its own session file (would wipe it)"
+        grep "not supported" "$WORKDIR/cmux2.log" | head -2
+    elif [[ "$(tab_count)" -ge 2 ]]; then
+        pass "tabs survive a restart ($BEFORE tabs back)"
+    else
+        fail "tabs did not survive a restart ($BEFORE before, $(tab_count) after)"
+        tail -5 "$WORKDIR/cmux2.log"
+    fi
+else
+    skip "restart round trip (no second tab to restore)"
 fi
 
 echo

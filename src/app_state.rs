@@ -1095,7 +1095,7 @@ impl AppState {
                     // v3 adds per-workspace tabs. Readers below v3 ignore the
                     // `tabs` array and fall back to `layout`, so downgrading
                     // costs the extra tabs but never the workspace.
-                    version: 3,
+                    version: crate::session::CURRENT_SESSION_VERSION,
                     active_index: self.active_index,
                     workspaces: self.workspaces.iter().enumerate().map(|(i, ws)| {
                         // D-02: save full split tree for ALL workspaces

@@ -70,6 +70,10 @@ pub struct SessionData {
     pub window_y: Option<i32>,
 }
 
+/// Highest session format this build writes and can read.
+/// v1: names only. v2: full split tree per workspace. v3: tabs per workspace.
+pub const CURRENT_SESSION_VERSION: u32 = 3;
+
 /// Returns the session file path.
 /// Respects $XDG_DATA_HOME/cmux/session.json; falls back to ~/.local/share/cmux/session.json.
 pub fn session_path() -> PathBuf {
@@ -123,7 +127,12 @@ pub fn load_session_from(path: &Path) -> Option<SessionData> {
     };
     match serde_json::from_str::<SessionData>(&content) {
         Ok(data) => {
-            if data.version != 1 && data.version != 2 {
+            // Accept anything up to the current format. Rejecting an unknown
+            // version means starting fresh, and starting fresh immediately
+            // overwrites the file — so a version the loader does not know is
+            // not merely ignored, it is destroyed. Bumping the writer without
+            // this line wiped every workspace on the next launch.
+            if data.version == 0 || data.version > CURRENT_SESSION_VERSION {
                 eprintln!("cmux: session version {} not supported, ignoring", data.version);
                 return None;
             }
@@ -321,5 +330,37 @@ mod tests {
         assert!(!ws.tabs[0].renamed, "auto title must not be marked renamed");
         assert!(ws.tabs[1].renamed, "explicit rename must survive restart");
         assert_eq!(ws.tabs[1].title, "meu nome");
+    }
+
+    /// The version the writer emits must be one the loader accepts.
+    ///
+    /// They drifted once: the writer was bumped to 3 while the loader still
+    /// hard-coded `version != 1 && version != 2`. Every launch then discarded
+    /// the session — and discarding it rewrites the file, so the user lost all
+    /// their workspaces. A rejected version is destructive, not inert.
+    #[test]
+    fn loader_accepts_the_version_the_writer_emits() {
+        let dir = std::env::temp_dir().join(format!("cmux-ver-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.json");
+
+        let mut data = dummy_session("ws");
+        data.version = CURRENT_SESSION_VERSION;
+        save_session_to(&data, &path).unwrap();
+
+        let loaded = load_session_from(&path);
+        assert!(
+            loaded.is_some(),
+            "loader rejected version {CURRENT_SESSION_VERSION}, which the writer emits"
+        );
+        assert_eq!(loaded.unwrap().version, CURRENT_SESSION_VERSION);
+
+        // A version from a future build is still refused, but that path only
+        // costs the session — it must never be the current one.
+        data.version = CURRENT_SESSION_VERSION + 1;
+        save_session_to(&data, &path).unwrap();
+        assert!(load_session_from(&path).is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
