@@ -6,6 +6,7 @@ use std::ffi::CString;
 mod ghostty;
 mod workspace;
 mod split_engine;
+mod tabs;
 mod app_state;
 mod sidebar;
 mod shortcuts;
@@ -102,6 +103,16 @@ paned > separator:hover { background-color: #5b8dd9; }
 .sidebar-close-btn image { -gtk-icon-size: 14px; }
 .workspace-list row:hover .sidebar-close-btn { opacity: 1; }
 .sidebar-close-btn:hover { background-color: rgba(255, 255, 255, 0.12); color: #ffffff; }
+/* Tabs inside a workspace. Hidden entirely while a workspace has one tab. */
+.tab-strip { background-color: #202020; border-bottom: 1px solid #3a3a3a; padding: 0 4px; }
+.tab-item { background-color: transparent; color: #9a9a9a; border: none; border-radius: 0;
+            padding: 6px 14px; margin: 0; font-size: 13px; box-shadow: none; }
+.tab-item:hover { background-color: #2a2a2a; color: #cccccc; }
+.tab-item-active { color: #ffffff; background-color: #1a1a1a;
+                   box-shadow: inset 0 -2px 0 #5b8dd9; }
+.tab-add { background-color: transparent; color: #9a9a9a; border: none;
+           padding: 4px 8px; margin: 2px 4px; border-radius: 4px; box-shadow: none; }
+.tab-add:hover { background-color: #2e2e2e; color: #ffffff; }
 /* Phase 9: Context menu popover */
 popover.menu { background-color: #2a2a2a; border: 1px solid #3a3a3a; border-radius: 8px; }
 popover.menu modelbutton { padding: 8px 16px; color: #cccccc; font-size: 14px; }
@@ -398,6 +409,14 @@ fn build_ui(
                         // D-15: tree invalid or too deep, fall back to single pane
                         eprintln!("cmux: workspace '{}' tree invalid, creating default", ws_session.name);
                         state.borrow_mut().create_workspace();
+    let idx = state.borrow().workspaces.len().saturating_sub(1);
+    crate::app_state::AppState::wire_tab_strip(&state, idx);
+            let idx = state.borrow().workspaces.len().saturating_sub(1);
+            crate::app_state::AppState::wire_tab_strip(&state, idx);
+                    let idx = state.borrow().workspaces.len().saturating_sub(1);
+                    crate::app_state::AppState::wire_tab_strip(&state, idx);
+                        let idx = state.borrow().workspaces.len().saturating_sub(1);
+                        crate::app_state::AppState::wire_tab_strip(&state, idx);
                         state.borrow_mut().rename_active(ws_session.name.clone());
                     }
                 }
@@ -406,6 +425,12 @@ fn build_ui(
                 // Version 1: name-only restore (auto-upgrade on next save per D-01)
                 for ws_session in &session.workspaces {
                     state.borrow_mut().create_workspace();
+    let idx = state.borrow().workspaces.len().saturating_sub(1);
+    crate::app_state::AppState::wire_tab_strip(&state, idx);
+            let idx = state.borrow().workspaces.len().saturating_sub(1);
+            crate::app_state::AppState::wire_tab_strip(&state, idx);
+                    let idx = state.borrow().workspaces.len().saturating_sub(1);
+                    crate::app_state::AppState::wire_tab_strip(&state, idx);
                     state.borrow_mut().rename_active(ws_session.name.clone());
                 }
             }
@@ -419,7 +444,7 @@ fn build_ui(
                 let state_for_sync = state.clone();
                 gtk4::glib::idle_add_local_once(move || {
                     let mut s = state_for_sync.borrow_mut();
-                    for engine in &mut s.split_engines {
+                    for engine in s.workspace_tabs.iter_mut().flat_map(|t| t.engines_mut()) {
                         engine.sync_surfaces_from_registry();
                     }
                     eprintln!("cmux: synced surface pointers from registry after restore");
@@ -428,6 +453,10 @@ fn build_ui(
         } else {
             // No session -- create the default first workspace.
             state.borrow_mut().create_workspace();
+    let idx = state.borrow().workspaces.len().saturating_sub(1);
+    crate::app_state::AppState::wire_tab_strip(&state, idx);
+            let idx = state.borrow().workspaces.len().saturating_sub(1);
+            crate::app_state::AppState::wire_tab_strip(&state, idx);
         }
     }
 

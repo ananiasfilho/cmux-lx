@@ -72,7 +72,9 @@ fn shorten_path(path: &str) -> String {
 }
 
 pub struct AppState {
-    pub split_engines: Vec<SplitEngine>,
+    /// One entry per workspace, parallel to `workspaces`. Each holds that
+    /// workspace's tabs; the split tree lives one level down, inside a tab.
+    pub workspace_tabs: Vec<crate::tabs::WorkspaceTabs>,
     pub gtk_app: gtk4::Application,
     /// All open workspaces. Never empty after initialization — create_workspace is called in new().
     pub workspaces: Vec<Workspace>,
@@ -135,7 +137,7 @@ impl AppState {
     ) -> AppStateRef {
         let state = AppState {
             workspaces: Vec::new(),
-            split_engines: Vec::new(),
+            workspace_tabs: Vec::new(),
             active_index: 0,
             stack,
             sidebar_list,
@@ -197,12 +199,13 @@ impl AppState {
 
         // Add to stack
         let page_name = format!("workspace-{}", id);
+        let tabs = crate::tabs::WorkspaceTabs::new(engine);
         self.stack
-            .add_named(&engine.root_widget(), Some(&page_name));
+            .add_named(&tabs.root_widget(), Some(&page_name));
         workspace.stack_page_name = page_name;
 
         self.workspaces.push(workspace);
-        self.split_engines.push(engine);
+        self.workspace_tabs.push(tabs);
 
         let new_index = self.workspaces.len() - 1;
         self.switch_to_index(new_index);
@@ -286,11 +289,12 @@ impl AppState {
 
         // Add to stack
         let page_name = format!("workspace-{}", id);
-        self.stack.add_named(&engine.root_widget(), Some(&page_name));
+        let tabs = crate::tabs::WorkspaceTabs::new(engine);
+        self.stack.add_named(&tabs.root_widget(), Some(&page_name));
         workspace.stack_page_name = page_name;
 
         self.workspaces.push(workspace);
-        self.split_engines.push(engine);
+        self.workspace_tabs.push(tabs);
 
         Some(id)
     }
@@ -431,11 +435,12 @@ impl AppState {
         );
 
         let page_name = workspace.stack_page_name.clone();
+        let tabs = crate::tabs::WorkspaceTabs::new(engine);
         self.stack
-            .add_named(&engine.root_widget(), Some(&page_name));
+            .add_named(&tabs.root_widget(), Some(&page_name));
 
         self.workspaces.push(workspace);
-        self.split_engines.push(engine);
+        self.workspace_tabs.push(tabs);
 
         // Register pane in bridge.streams so run_proxy_routing can find it
         // and open a remote stream after SSH handshake completes.
@@ -490,9 +495,11 @@ impl AppState {
         }
 
         // Before removing from workspaces, free all Ghostty surfaces in the split engine.
-        if let Some(engine) = self.split_engines.get(index) {
+        if let Some(tabs) = self.workspace_tabs.get(index) {
             let mut surfaces = Vec::new();
-            engine.root.collect_surfaces(&mut surfaces);
+            for engine in tabs.engines() {
+                engine.root.collect_surfaces(&mut surfaces);
+            }
             for surface in surfaces {
                 // Idempotent free: removing the stack page below unrealizes these
                 // GLAreas, whose unrealize callback also frees the surface. Guard
@@ -500,7 +507,7 @@ impl AppState {
                 crate::ghostty::callbacks::free_surface_if_live(surface);
             }
         }
-        self.split_engines.remove(index);
+        self.workspace_tabs.remove(index);
 
         let workspace = self.workspaces.remove(index);
 
@@ -567,8 +574,8 @@ impl AppState {
             }
         }
         // Grab GTK keyboard focus on the active pane so key events reach Ghostty.
-        if let Some(engine) = self.split_engines.get(index) {
-            engine.grab_active_focus();
+        if let Some(tabs) = self.workspace_tabs.get(index) {
+            tabs.active_engine().grab_active_focus();
         }
     }
 
@@ -594,12 +601,124 @@ impl AppState {
         self.switch_to_index(prev);
     }
 
+    /// Connect the tab strip of workspace `idx` to state mutations. Called
+    /// right after a workspace is created, from the site that holds the
+    /// AppStateRc (create_workspace only has `&mut self`).
+    pub fn wire_tab_strip(state: &AppStateRef, idx: usize) {
+        let select = {
+            let state = state.clone();
+            std::rc::Rc::new(move |tab_index: usize| {
+                state.borrow_mut().switch_to_tab(tab_index);
+            }) as std::rc::Rc<dyn Fn(usize)>
+        };
+        let new_tab = {
+            let state = state.clone();
+            std::rc::Rc::new(move || {
+                state.borrow_mut().new_tab();
+            }) as std::rc::Rc<dyn Fn()>
+        };
+        if let Some(tabs) = state.borrow_mut().workspace_tabs.get_mut(idx) {
+            tabs.set_handlers(select, new_tab);
+        }
+    }
+
+    /// Open a new tab in the active workspace and focus it.
+    ///
+    /// This is the level cmux on macOS has and the Linux port was missing:
+    /// Ctrl+T adds a terminal *inside* the current workspace instead of
+    /// creating another sidebar entry.
+    pub fn new_tab(&mut self) -> Option<u64> {
+        let idx = self.active_index;
+        let base = self.workspace_tabs.get(idx)?.max_pane_id();
+        // Start the new tab's IDs in a fresh block so they cannot collide with
+        // panes of sibling tabs or of the workspace's original engine.
+        let pane_id = ((base / crate::tabs::PANE_ID_BLOCK) + 1) * crate::tabs::PANE_ID_BLOCK;
+
+        let (gl_area, surface_cell) = crate::ghostty::surface::create_surface(
+            &self.gtk_app,
+            self.ghostty_app,
+            None,
+            pane_id,
+            crate::ghostty::surface::SurfaceIoMode::Exec,
+            None,
+        );
+        let engine = SplitEngine::new(
+            self.gtk_app.clone(),
+            self.ghostty_app,
+            gl_area,
+            surface_cell,
+            pane_id,
+        );
+
+        let tabs = self.workspace_tabs.get_mut(idx)?;
+        tabs.push_tab(engine);
+        tabs.active_engine().grab_active_focus();
+
+        self.trigger_session_save();
+        Some(pane_id)
+    }
+
+    /// Close the active tab of the active workspace. Frees the Ghostty surfaces
+    /// it owned. No-op when the workspace has a single tab — use close_workspace
+    /// for that, so a workspace is never left with no terminal.
+    pub fn close_active_tab(&mut self) -> bool {
+        let idx = self.active_index;
+        let Some(tabs) = self.workspace_tabs.get_mut(idx) else {
+            return false;
+        };
+        if tabs.len() <= 1 {
+            return false;
+        }
+
+        let surfaces: Vec<_> = {
+            let mut out = Vec::new();
+            tabs.active_engine().root.collect_surfaces(&mut out);
+            out
+        };
+        let closed = tabs.close_tab(tabs.active_index()).is_some();
+        if closed {
+            for surface in surfaces {
+                crate::ghostty::callbacks::free_surface_if_live(surface);
+            }
+            if let Some(tabs) = self.workspace_tabs.get(idx) {
+                tabs.active_engine().grab_active_focus();
+            }
+            self.trigger_session_save();
+        }
+        closed
+    }
+
+    pub fn next_tab(&mut self) {
+        let idx = self.active_index;
+        if let Some(tabs) = self.workspace_tabs.get_mut(idx) {
+            tabs.next_tab();
+            tabs.active_engine().grab_active_focus();
+        }
+    }
+
+    pub fn prev_tab(&mut self) {
+        let idx = self.active_index;
+        if let Some(tabs) = self.workspace_tabs.get_mut(idx) {
+            tabs.prev_tab();
+            tabs.active_engine().grab_active_focus();
+        }
+    }
+
+    /// Select tab `n` (0-based) in the active workspace.
+    pub fn switch_to_tab(&mut self, n: usize) {
+        let idx = self.active_index;
+        if let Some(tabs) = self.workspace_tabs.get_mut(idx) {
+            tabs.switch_to(n);
+            tabs.active_engine().grab_active_focus();
+        }
+    }
+
     pub fn active_split_engine(&self) -> Option<&SplitEngine> {
-        self.split_engines.get(self.active_index)
+        self.workspace_tabs.get(self.active_index).map(|t| t.active_engine())
     }
 
     pub fn active_split_engine_mut(&mut self) -> Option<&mut SplitEngine> {
-        self.split_engines.get_mut(self.active_index)
+        self.workspace_tabs.get_mut(self.active_index).map(|t| t.active_engine_mut())
     }
 
     /// Rename the active workspace. Per D-03/D-10: Ctrl+Shift+R (UI wired in Plan 04/05).
@@ -628,9 +747,22 @@ impl AppState {
     /// Set attention on a specific pane. Called from bell handler.
     /// Updates workspace has_attention and sidebar dot.
     pub fn set_pane_attention(&mut self, pane_id: u64) {
-        for (idx, engine) in self.split_engines.iter_mut().enumerate() {
-            if engine.root.set_attention(pane_id, true) {
-                self.workspaces[idx].has_attention = engine.root.any_attention();
+        // Scan every tab, not just the visible one: a bell from a background
+        // tab must still raise the workspace's dot in the sidebar.
+        let mut owner: Option<usize> = None;
+        for (idx, tabs) in self.workspace_tabs.iter_mut().enumerate() {
+            if tabs.engines_mut().any(|e| e.root.set_attention(pane_id, true)) {
+                owner = Some(idx);
+                break;
+            }
+        }
+
+        for idx in owner {
+            {
+                let any = self.workspace_tabs[idx]
+                    .engines()
+                    .any(|e| e.root.any_attention());
+                self.workspaces[idx].has_attention = any;
                 self.update_sidebar_attention(idx);
 
                 // Desktop notification when window is unfocused (NOTF-03)
@@ -646,7 +778,6 @@ impl AppState {
                         send_bell_notification(&self.gtk_app, &self.workspaces[idx].name, idx);
                     }
                 }
-                break;
             }
         }
     }
@@ -663,9 +794,11 @@ impl AppState {
         // and sets, so we locate by pane membership first to decide whether to
         // badge at all).
         let mut owner: Option<usize> = None;
-        for (idx, engine) in self.split_engines.iter().enumerate() {
+        for (idx, tabs) in self.workspace_tabs.iter().enumerate() {
             let mut ids = Vec::new();
-            engine.root.collect_pane_ids(&mut ids);
+            for engine in tabs.engines() {
+                engine.root.collect_pane_ids(&mut ids);
+            }
             if ids.contains(&pane_id) {
                 owner = Some(idx);
                 break;
@@ -685,8 +818,14 @@ impl AppState {
         }
 
         // Raise the unread badge on the owning tab.
-        self.split_engines[idx].root.set_attention(pane_id, true);
-        self.workspaces[idx].has_attention = self.split_engines[idx].root.any_attention();
+        for engine in self.workspace_tabs[idx].engines_mut() {
+            if engine.root.set_attention(pane_id, true) {
+                break;
+            }
+        }
+        self.workspaces[idx].has_attention = self.workspace_tabs[idx]
+            .engines()
+            .any(|e| e.root.any_attention());
         self.update_sidebar_attention(idx);
 
         // Rate-limit native banners to 1 per workspace per 5s (shared with bell).
@@ -718,7 +857,8 @@ impl AppState {
     pub fn update_pane_pwd(&mut self, pane_id: u64, pwd: String) {
         // Locate the workspace whose split tree owns this pane.
         let mut target: Option<usize> = None;
-        for (idx, engine) in self.split_engines.iter().enumerate() {
+        for (idx, tabs) in self.workspace_tabs.iter().enumerate() {
+            let engine = tabs.active_engine();
             // Only the active pane of the workspace sets the tab's directory.
             if engine.active_pane_id != pane_id {
                 continue;
@@ -770,7 +910,7 @@ impl AppState {
 
     /// Clear all attention in the workspace at `index`.
     pub fn clear_workspace_attention(&mut self, index: usize) {
-        if let Some(engine) = self.split_engines.get_mut(index) {
+        if let Some(engine) = self.workspace_tabs.get_mut(index).map(|t| t.active_engine_mut()) {
             engine.root.clear_all_attention();
         }
         if let Some(ws) = self.workspaces.get_mut(index) {
@@ -823,8 +963,8 @@ impl AppState {
                     active_index: self.active_index,
                     workspaces: self.workspaces.iter().enumerate().map(|(i, ws)| {
                         // D-02: save full split tree for ALL workspaces
-                        let layout = if i < self.split_engines.len() {
-                            self.split_engines[i].root.to_data()
+                        let layout = if i < self.workspace_tabs.len() {
+                            self.workspace_tabs[i].active_engine().root.to_data()
                         } else {
                             // Fallback: shouldn't happen, but be safe
                             crate::split_engine::SplitNodeData::Leaf {
@@ -835,8 +975,8 @@ impl AppState {
                             }
                         };
                         // D-04: save active_pane_uuid per workspace
-                        let active_pane_uuid = if i < self.split_engines.len() {
-                            self.split_engines[i].active_pane_uuid()
+                        let active_pane_uuid = if i < self.workspace_tabs.len() {
+                            self.workspace_tabs[i].active_engine().active_pane_uuid()
                         } else {
                             None
                         };

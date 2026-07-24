@@ -30,6 +30,23 @@ pub fn install_shortcuts(
         let state = state.clone();
         move |_ctrl, keyval, _keycode, mods| {
             match shortcut_map.lookup(mods, keyval) {
+                // -- Tab shortcuts (inside the active workspace) --
+                Some(ShortcutAction::NewTab) => {
+                    state.borrow_mut().new_tab();
+                    gtk4::glib::Propagation::Stop
+                }
+                Some(ShortcutAction::CloseTab) => {
+                    state.borrow_mut().close_active_tab();
+                    gtk4::glib::Propagation::Stop
+                }
+                Some(ShortcutAction::NextTab) => {
+                    state.borrow_mut().next_tab();
+                    gtk4::glib::Propagation::Stop
+                }
+                Some(ShortcutAction::PrevTab) => {
+                    state.borrow_mut().prev_tab();
+                    gtk4::glib::Propagation::Stop
+                }
                 // -- Workspace shortcuts --
                 Some(ShortcutAction::NewWorkspace) => {
                     handle_new_workspace(&state, &app_clone);
@@ -144,6 +161,8 @@ pub fn install_shortcuts(
 /// Create a new workspace with an initial GLArea pane and add it to AppState + GtkStack.
 pub fn handle_new_workspace(state: &Rc<RefCell<AppState>>, app: &gtk4::Application) {
     state.borrow_mut().create_workspace();
+    let idx = state.borrow().workspaces.len().saturating_sub(1);
+    crate::app_state::AppState::wire_tab_strip(state, idx);
     // Wire close button + context menu on the newly created sidebar row
     let sidebar_list = state.borrow().sidebar_list.clone();
     crate::sidebar::wire_latest_row(&sidebar_list, state.clone(), app);
