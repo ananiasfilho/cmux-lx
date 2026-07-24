@@ -364,6 +364,30 @@ pub fn register_actions(
     window.add_action(&action);
 }
 
+/// Register the tab-scoped GIO actions used by the tab strip's context menu.
+/// Separate from register_actions because the tab strip is rebuilt on every
+/// tab change and must not re-register window actions each time.
+pub fn register_tab_actions(
+    window: &gtk4::ApplicationWindow,
+    state: crate::app_state::AppStateRef,
+) {
+    let action = gio::SimpleAction::new("rename-tab", None);
+    action.connect_activate({
+        let state = state.clone();
+        move |_, _| state.borrow_mut().begin_rename_active_tab()
+    });
+    window.add_action(&action);
+
+    let action = gio::SimpleAction::new("close-tab", None);
+    action.connect_activate({
+        let state = state.clone();
+        move |_, _| {
+            state.borrow_mut().close_active_tab();
+        }
+    });
+    window.add_action(&action);
+}
+
 /// Register keyboard accelerators for GIO actions so menus show shortcut hints.
 /// Per Pitfall 3 from RESEARCH.md: GTK4 shows accels in menus ONLY if registered via set_accels_for_action.
 ///

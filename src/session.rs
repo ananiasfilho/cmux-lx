@@ -37,6 +37,13 @@ pub struct SessionData {
     pub window_height: Option<i32>,
     #[serde(default)]
     pub window_maximized: Option<bool>,
+    /// Window position in root coordinates, so a multi-monitor setup reopens on
+    /// the monitor it was closed on. X11 only — Wayland forbids a client from
+    /// knowing or setting its own position.
+    #[serde(default)]
+    pub window_x: Option<i32>,
+    #[serde(default)]
+    pub window_y: Option<i32>,
 }
 
 /// Returns the session file path.
@@ -130,6 +137,8 @@ mod tests {
             window_width: None,
             window_height: None,
             window_maximized: None,
+            window_x: None,
+            window_y: None,
         }
     }
 
@@ -208,16 +217,21 @@ mod tests {
             window_width: Some(1440),
             window_height: Some(900),
             window_maximized: Some(true),
+            window_x: Some(1920),
+            window_y: Some(64),
         };
         let json = serde_json::to_string(&data).unwrap();
         let back: SessionData = serde_json::from_str(&json).unwrap();
         assert_eq!(back.window_width, Some(1440));
         assert_eq!(back.window_height, Some(900));
         assert_eq!(back.window_maximized, Some(true));
+        assert_eq!(back.window_x, Some(1920));
+        assert_eq!(back.window_y, Some(64));
 
         let legacy = r#"{"version":2,"active_index":0,"workspaces":[]}"#;
         let parsed: SessionData = serde_json::from_str(legacy).unwrap();
         assert_eq!(parsed.window_width, None);
         assert_eq!(parsed.window_maximized, None);
+        assert_eq!(parsed.window_x, None);
     }
 }

@@ -348,6 +348,37 @@ impl WorkspaceTabs {
                 });
                 button.add_controller(gesture);
             }
+
+            // Right-click menu on the tab itself. Mirrors what the sidebar row
+            // offers for a workspace, scoped to this tab.
+            {
+                let menu = gtk4::gio::Menu::new();
+                menu.append(Some("Rename Tab"), Some("win.rename-tab"));
+                menu.append(Some("Close Tab"), Some("win.close-tab"));
+                let split = gtk4::gio::Menu::new();
+                split.append(Some("Split Right"), Some("win.split-right"));
+                split.append(Some("Split Down"), Some("win.split-down"));
+                menu.append_section(None, &split);
+
+                let popover = gtk4::PopoverMenu::from_model(Some(&menu));
+                popover.set_parent(&button);
+                popover.set_has_arrow(false);
+
+                let gesture = gtk4::GestureClick::new();
+                gesture.set_button(3);
+                let select = self.on_select.clone();
+                gesture.connect_pressed(move |_, _, x, y| {
+                    // Act on the tab that was right-clicked, not the active one.
+                    if let Some(ref cb) = select {
+                        cb(i);
+                    }
+                    popover.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(
+                        x as i32, y as i32, 1, 1,
+                    )));
+                    popover.popup();
+                });
+                button.add_controller(gesture);
+            }
             self.strip.append(&button);
         }
 

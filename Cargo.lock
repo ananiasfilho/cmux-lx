@@ -528,6 +528,7 @@ dependencies = [
  "clap_complete",
  "clap_mangen",
  "futures-util",
+ "gdk4-x11",
  "glib",
  "gtk4",
  "libc",
@@ -537,6 +538,7 @@ dependencies = [
  "tokio-tungstenite",
  "toml 0.8.23",
  "uuid",
+ "x11",
 ]
 
 [[package]]
@@ -929,6 +931,31 @@ dependencies = [
  "libc",
  "pango-sys",
  "pkg-config",
+ "system-deps",
+]
+
+[[package]]
+name = "gdk4-x11"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd10920274b392ff87d5b51932bebe24e428f9a2c0e1540b9d9be92a497f265a"
+dependencies = [
+ "gdk4",
+ "gdk4-x11-sys",
+ "gio",
+ "glib",
+ "libc",
+]
+
+[[package]]
+name = "gdk4-x11-sys"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8885d7dbeb194e6be61f0c62403200ad0c2f1da6930f816214eaf7124e0287bd"
+dependencies = [
+ "gdk4-sys",
+ "glib-sys",
+ "libc",
  "system-deps",
 ]
 
@@ -3755,6 +3782,16 @@ name = "writeable"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
+
+[[package]]
+name = "x11"
+version = "2.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "502da5464ccd04011667b11c435cb992822c2c0dbde1770c988480d312a0db2e"
+dependencies = [
+ "libc",
+ "pkg-config",
+]
 
 [[package]]
 name = "y4m"

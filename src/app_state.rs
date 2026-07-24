@@ -123,6 +123,9 @@ pub struct AppState {
     pub window_width: i32,
     pub window_height: i32,
     pub window_maximized: bool,
+    /// Last known window position in root coordinates (X11 only).
+    pub window_x: Option<i32>,
+    pub window_y: Option<i32>,
 }
 
 /// Default window size when no session value is restored.
@@ -169,6 +172,8 @@ impl AppState {
             window_width: DEFAULT_WINDOW_WIDTH,
             window_height: DEFAULT_WINDOW_HEIGHT,
             window_maximized: false,
+            window_x: None,
+            window_y: None,
         };
         Rc::new(RefCell::new(state))
     }
@@ -662,12 +667,30 @@ impl AppState {
         }
     }
 
-    /// Wire the tab strip of every existing workspace. Call after any batch of
-    /// workspace creation or restoration.
+    /// Wire every per-workspace interaction: tab strips, plus each sidebar
+    /// row's close button and right-click menu.
+    ///
+    /// One sweep rather than per-creation-site wiring, and one function rather
+    /// than two, because splitting this has bitten twice already: tab strips
+    /// were wired only on create_workspace() (dead buttons on every restored
+    /// workspace), and sidebar rows only in a startup loop via a `wire_latest_row`
+    /// helper that was never actually called — so any workspace created after
+    /// launch had no context menu and no close button.
+    ///
+    /// Idempotent and cheap: a handful of workspaces, and only on creation.
     pub fn wire_all_tab_strips(state: &AppStateRef) {
-        let count = state.borrow().workspace_tabs.len();
+        let (count, sidebar_list, app) = {
+            let s = state.borrow();
+            (s.workspace_tabs.len(), s.sidebar_list.clone(), s.gtk_app.clone())
+        };
         for idx in 0..count {
             Self::wire_tab_strip(state, idx);
+        }
+        for i in 0..count {
+            if let Some(row) = sidebar_list.row_at_index(i as i32) {
+                crate::sidebar::wire_row_close_button(&row, state.clone(), &app);
+                crate::sidebar::attach_sidebar_context_menu(&row, state.clone());
+            }
         }
     }
 
@@ -1050,6 +1073,8 @@ impl AppState {
                     window_width: Some(self.window_width),
                     window_height: Some(self.window_height),
                     window_maximized: Some(self.window_maximized),
+                    window_x: self.window_x,
+                    window_y: self.window_y,
                 };
                 let _ = tx.send(session);
             }

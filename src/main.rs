@@ -8,6 +8,7 @@ mod workspace;
 mod split_engine;
 mod tabs;
 mod instance;
+mod window_geometry;
 mod app_state;
 mod sidebar;
 mod shortcuts;
@@ -337,6 +338,28 @@ fn build_ui(
         window.maximize();
     }
 
+    // Restore the window's position, which GTK4 does not do: it has no
+    // positioning API at all, so on two monitors the window reappears wherever
+    // the WM puts it — in practice under the pointer. Done after map, because
+    // the X11 surface does not exist before that.
+    if let Some((saved_x, saved_y)) = saved_session
+        .as_ref()
+        .and_then(|s| s.window_x.zip(s.window_y))
+    {
+        window.connect_map(move |w| {
+            // A monitor unplugged since the last run would strand the window
+            // off-screen with no way to drag it back. Leave placement to the WM.
+            let display = gtk4::prelude::WidgetExt::display(w);
+            if crate::window_geometry::is_on_some_monitor(&display, saved_x, saved_y) {
+                crate::window_geometry::move_to(w, saved_x, saved_y);
+            } else {
+                eprintln!(
+                    "cmux: saved window position {saved_x},{saved_y} is off-screen now;                      letting the window manager place the window"
+                );
+            }
+        });
+    }
+
     let (sidebar_box, _sidebar_scroll, sidebar_list) = crate::sidebar::build_sidebar();
     let stack = gtk4::Stack::new();
     stack.set_transition_type(gtk4::StackTransitionType::None);
@@ -412,12 +435,27 @@ fn build_ui(
         let record = move |w: &ApplicationWindow| {
             let maximized = w.is_maximized();
             let (width, height) = (w.default_width(), w.default_height());
+            // Position must be read from X11; GTK does not expose it. Skip while
+            // maximized so the restored position is the un-maximized one.
+            let position = if maximized {
+                None
+            } else {
+                crate::window_geometry::current_position(w)
+            };
             let mut s = state.borrow_mut();
-            if s.window_width != width || s.window_height != height || s.window_maximized != maximized
+            let moved = position.is_some() && (s.window_x, s.window_y) != (position.map(|p| p.0), position.map(|p| p.1));
+            if s.window_width != width
+                || s.window_height != height
+                || s.window_maximized != maximized
+                || moved
             {
                 s.window_width = width;
                 s.window_height = height;
                 s.window_maximized = maximized;
+                if let Some((x, y)) = position {
+                    s.window_x = Some(x);
+                    s.window_y = Some(y);
+                }
                 s.trigger_session_save();
             }
         };
@@ -425,6 +463,30 @@ fn build_ui(
             let record = record.clone();
             window.connect_notify_local(Some(prop), move |w, _| record(w));
         }
+    }
+
+    // Dragging the window between monitors fires no GTK signal — GTK4 has no
+    // notion of window position at all — so the notify handlers above never see
+    // a pure move. Poll instead. One XTranslateCoordinates round trip every two
+    // seconds is negligible, and unlike capturing only on close it survives a
+    // crash or a kill.
+    {
+        let state = state.clone();
+        let window = window.clone();
+        gtk4::glib::timeout_add_seconds_local(2, move || {
+            if window.is_maximized() || !window.is_visible() {
+                return gtk4::glib::ControlFlow::Continue;
+            }
+            if let Some((x, y)) = crate::window_geometry::current_position(&window) {
+                let mut s = state.borrow_mut();
+                if (s.window_x, s.window_y) != (Some(x), Some(y)) {
+                    s.window_x = Some(x);
+                    s.window_y = Some(y);
+                    s.trigger_session_save();
+                }
+            }
+            gtk4::glib::ControlFlow::Continue
+        });
     }
 
     // Wire sidebar click-to-switch.
@@ -489,15 +551,6 @@ fn build_ui(
     }
 
     // Phase 9: Wire close buttons + context menus on all sidebar rows created above.
-    {
-        let n = sidebar_list.observe_children().n_items();
-        for i in 0..n {
-            if let Some(row) = sidebar_list.row_at_index(i as i32) {
-                crate::sidebar::wire_row_close_button(&row, state.clone(), app);
-                crate::sidebar::attach_sidebar_context_menu(&row, state.clone());
-            }
-        }
-    }
 
     // Attach command receiver to GTK main loop via glib::MainContext::default().spawn_local.
     // This replaces the old glib::MainContext::channel pattern (removed in glib 0.18+).
@@ -746,6 +799,7 @@ fn build_ui(
 
     // Phase 9: Register GIO actions for menu/button dispatch
     crate::menus::register_actions(&window, state.clone(), &sidebar_box, app);
+    crate::menus::register_tab_actions(&window, state.clone());
     crate::menus::register_accels(app, &config.shortcuts);
 
     // Wire every workspace's tab strip. Done as a sweep rather than at each
