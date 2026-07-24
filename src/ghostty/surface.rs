@@ -492,8 +492,8 @@ pub fn create_surface(
     let key_controller = gtk4::EventControllerKey::new();
     key_controller.connect_key_pressed({
         let cell = surface_cell.clone();
-        move |_ctrl, keyval, keycode, state| {
-            use crate::ghostty::input::map_mods;
+        move |ctrl, keyval, keycode, state| {
+            use crate::ghostty::input::{map_mods, unshifted_and_consumed};
 
             let surface = match *cell.borrow() {
                 Some(s) => s,
@@ -523,7 +523,15 @@ pub fn create_surface(
             input.mods = map_mods(state);
             input.action = ffi::ghostty_input_action_e_GHOSTTY_ACTION_PRESS;
             input.text = text_ptr;
-            input.consumed_mods = 0; // Not used in Phase 1
+
+            // Ghostty needs the layout-unshifted codepoint and the layout-consumed
+            // modifiers to choose the legacy control encoding. Leaving these at 0
+            // forces the Kitty CSI-u form, so Ctrl+[ emitted `CSI 91;5u` — printed
+            // by the shell as a literal `1;5u` — instead of ESC.
+            let (unshifted, consumed) = unshifted_and_consumed(ctrl, keycode);
+            input.unshifted_codepoint = unshifted;
+            input.consumed_mods = consumed;
+            input.composing = false;
 
             unsafe {
                 ffi::ghostty_surface_key(surface, input);
@@ -533,8 +541,8 @@ pub fn create_surface(
     });
     key_controller.connect_key_released({
         let cell = surface_cell.clone();
-        move |_ctrl, _keyval, keycode, state| {
-            use crate::ghostty::input::map_mods;
+        move |ctrl, _keyval, keycode, state| {
+            use crate::ghostty::input::{map_mods, unshifted_and_consumed};
 
             let surface = match *cell.borrow() {
                 Some(s) => s,
@@ -546,7 +554,13 @@ pub fn create_surface(
             input.mods = map_mods(state);
             input.action = ffi::ghostty_input_action_e_GHOSTTY_ACTION_RELEASE;
             input.text = std::ptr::null();
-            input.consumed_mods = 0; // Not used in Phase 1
+
+            // Same resolution as the press path — release events feed the same
+            // encoder state, so they must not report a zeroed key identity.
+            let (unshifted, consumed) = unshifted_and_consumed(ctrl, keycode);
+            input.unshifted_codepoint = unshifted;
+            input.consumed_mods = consumed;
+            input.composing = false;
             unsafe {
                 ffi::ghostty_surface_key(surface, input);
             }
