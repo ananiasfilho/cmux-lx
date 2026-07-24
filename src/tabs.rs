@@ -55,6 +55,9 @@ pub struct WorkspaceTabs {
     on_rename: Option<std::rc::Rc<dyn Fn(usize, Option<String>)>>,
     /// Called when a double-click asks to start renaming tab `index`.
     on_rename_request: Option<std::rc::Rc<dyn Fn(usize)>>,
+    /// Right-click menu, parented to the strip and created once. Buttons come
+    /// and go on every rebuild; the strip does not.
+    context_menu: gtk4::PopoverMenu,
 }
 
 impl WorkspaceTabs {
@@ -67,6 +70,22 @@ impl WorkspaceTabs {
         let inner_stack = gtk4::Stack::new();
         inner_stack.set_vexpand(true);
         inner_stack.set_hexpand(true);
+
+        let menu = gtk4::gio::Menu::new();
+        menu.append(Some("Rename Tab"), Some("win.rename-tab"));
+        menu.append(Some("Close Tab"), Some("win.close-tab"));
+        let split_section = gtk4::gio::Menu::new();
+        split_section.append(Some("Split Right"), Some("win.split-right"));
+        split_section.append(Some("Split Down"), Some("win.split-down"));
+        menu.append_section(None, &split_section);
+        // Deliberately NOT parented here: at construction the strip is not yet
+        // inside a toplevel (the caller adds our root to the workspace stack
+        // afterwards), and parenting a popover to a widget outside a window
+        // makes GTK fail to realize it — gdk_surface_new_popup then asserts on
+        // a NULL parent surface. Parented in set_handlers(), which runs after
+        // the widget tree is assembled.
+        let context_menu = gtk4::PopoverMenu::from_model(Some(&menu));
+        context_menu.set_has_arrow(false);
 
         let page_name = "tab-0".to_string();
         inner_stack.add_named(&engine.root_widget(), Some(&page_name));
@@ -91,6 +110,7 @@ impl WorkspaceTabs {
             renaming: None,
             on_rename: None,
             on_rename_request: None,
+            context_menu,
         };
         this.rebuild_strip();
         this
@@ -108,6 +128,17 @@ impl WorkspaceTabs {
         self.on_new = Some(on_new);
         self.on_rename = Some(on_rename);
         self.on_rename_request = Some(on_rename_request);
+        // Parent the context menu now that the strip is inside the window.
+        // Idempotent: the sweep that calls this runs on every workspace
+        // creation, so it can be reached more than once for the same strip.
+        // Parent to `root`, NOT to `strip`: set_parent() makes the popover a
+        // child widget, and rebuild_strip() clears every child of the strip —
+        // which silently unparented the popover, so the next popup() realized a
+        // widget with no parent surface and took the window down with it.
+        // `root` is created once and never cleared.
+        if self.context_menu.parent().is_none() {
+            self.context_menu.set_parent(&self.root);
+        }
         self.rebuild_strip();
     }
 
@@ -283,8 +314,15 @@ impl WorkspaceTabs {
     /// Rebuild the tab strip. Cheap: a workspace has a handful of tabs, and this
     /// only runs on tab add/remove/switch — never during typing.
     fn rebuild_strip(&mut self) {
-        while let Some(child) = self.strip.first_child() {
-            self.strip.remove(&child);
+        // Remove only what this function put here. A blind first_child() loop
+        // also rips out anything else parented to the strip — which is how the
+        // context menu lost its parent and crashed the app on the next click.
+        let mut child = self.strip.first_child();
+        while let Some(w) = child {
+            child = w.next_sibling();
+            if w.is::<gtk4::Button>() || w.is::<gtk4::Entry>() {
+                self.strip.remove(&w);
+            }
         }
 
         // A single tab shows no strip at all, so nothing changes visually for
@@ -349,36 +387,45 @@ impl WorkspaceTabs {
                 button.add_controller(gesture);
             }
 
-            // Right-click menu on the tab itself. Mirrors what the sidebar row
-            // offers for a workspace, scoped to this tab.
+            // Right-click opens the strip-owned popover. The popover must NOT be
+            // parented to this button: rebuild_strip() destroys every button, so
+            // a button-owned popover is dangling the moment the strip is rebuilt
+            // — which the handler itself triggers by switching tabs. Popping up
+            // that dangling widget closed the window.
             {
-                let menu = gtk4::gio::Menu::new();
-                menu.append(Some("Rename Tab"), Some("win.rename-tab"));
-                menu.append(Some("Close Tab"), Some("win.close-tab"));
-                let split = gtk4::gio::Menu::new();
-                split.append(Some("Split Right"), Some("win.split-right"));
-                split.append(Some("Split Down"), Some("win.split-down"));
-                menu.append_section(None, &split);
-
-                let popover = gtk4::PopoverMenu::from_model(Some(&menu));
-                popover.set_parent(&button);
-                popover.set_has_arrow(false);
-
+                let popover = self.context_menu.clone();
+                let select = self.on_select.clone();
+                let anchor = self.root.clone();
+                let button_ref = button.clone();
                 let gesture = gtk4::GestureClick::new();
                 gesture.set_button(3);
-                let select = self.on_select.clone();
-                gesture.connect_pressed(move |_, _, x, y| {
-                    // Act on the tab that was right-clicked, not the active one.
-                    if let Some(ref cb) = select {
-                        cb(i);
+                gesture.connect_pressed(move |_, _, _, _| {
+                    // Point at the clicked tab, in strip coordinates.
+                    if let Some((bx, by)) = button_ref
+                        .translate_coordinates(&anchor, 0.0, 0.0)
+                        .map(|(x, y)| (x as i32, y as i32))
+                    {
+                        popover.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(
+                            bx,
+                            by,
+                            button_ref.width().max(1),
+                            button_ref.height().max(1),
+                        )));
                     }
-                    popover.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(
-                        x as i32, y as i32, 1, 1,
-                    )));
                     popover.popup();
+
+                    // Make the clicked tab active so the menu's actions apply to
+                    // it. Deferred: switching rebuilds the strip, and doing that
+                    // inside the gesture would destroy the widget the gesture
+                    // belongs to.
+                    if let Some(ref cb) = select {
+                        let cb = cb.clone();
+                        gtk4::glib::idle_add_local_once(move || cb(i));
+                    }
                 });
                 button.add_controller(gesture);
             }
+
             self.strip.append(&button);
         }
 
@@ -392,4 +439,15 @@ impl WorkspaceTabs {
         self.strip.append(&add);
     }
 
+}
+
+impl Drop for WorkspaceTabs {
+    fn drop(&mut self) {
+        // A popover attached with set_parent() must be unparented explicitly.
+        // Letting the strip be finalized while it still owns the popover emits
+        // a GTK critical, and closing a workspace destroys the strip.
+        // Parented to `root`; unparent explicitly or GTK criticals when root is
+        // finalized with a child still attached.
+        self.context_menu.unparent();
+    }
 }
