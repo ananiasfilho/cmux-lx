@@ -8,9 +8,20 @@ use std::path::PathBuf;
 /// Compute the Unix socket path per D-06.
 /// $XDG_RUNTIME_DIR/cmux/cmux.sock, fallback /run/user/{uid}/cmux/cmux.sock.
 pub fn socket_path() -> PathBuf {
+    socket_path_for_slot(crate::instance::current_slot())
+}
+
+/// Socket path for an explicit instance slot. Slot 1 keeps the historical
+/// `cmux.sock` so the CLI and existing scripts are unaffected.
+pub fn socket_path_for_slot(slot: u32) -> PathBuf {
     let base = std::env::var("XDG_RUNTIME_DIR")
         .unwrap_or_else(|_| format!("/run/user/{}", unsafe { libc::getuid() }));
-    PathBuf::from(base).join("cmux").join("cmux.sock")
+    let name = if slot <= 1 {
+        "cmux.sock".to_string()
+    } else {
+        format!("cmux-{slot}.sock")
+    };
+    PathBuf::from(base).join("cmux").join(name)
 }
 
 /// Returns the directory containing the socket file.

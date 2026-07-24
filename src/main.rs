@@ -7,6 +7,7 @@ mod ghostty;
 mod workspace;
 mod split_engine;
 mod tabs;
+mod instance;
 mod app_state;
 mod sidebar;
 mod shortcuts;
@@ -110,6 +111,8 @@ paned > separator:hover { background-color: #5b8dd9; }
 .tab-item:hover { background-color: #2a2a2a; color: #cccccc; }
 .tab-item-active { color: #ffffff; background-color: #1a1a1a;
                    box-shadow: inset 0 -2px 0 #5b8dd9; }
+.tab-rename { background-color: #1a1a1a; color: #ffffff; border: 1px solid #5b8dd9;
+              border-radius: 0; padding: 4px 8px; margin: 0; font-size: 13px; min-height: 0; }
 .tab-add { background-color: transparent; color: #9a9a9a; border: none;
            padding: 4px 8px; margin: 2px 4px; border-radius: 4px; box-shadow: none; }
 .tab-add:hover { background-color: #2e2e2e; color: #ffffff; }

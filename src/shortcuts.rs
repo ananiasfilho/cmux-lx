@@ -30,6 +30,10 @@ pub fn install_shortcuts(
         let state = state.clone();
         move |_ctrl, keyval, _keycode, mods| {
             match shortcut_map.lookup(mods, keyval) {
+                Some(ShortcutAction::NewWindow) => {
+                    spawn_new_window();
+                    gtk4::glib::Propagation::Stop
+                }
                 // -- Tab shortcuts (inside the active workspace) --
                 Some(ShortcutAction::NewTab) => {
                     state.borrow_mut().new_tab();
@@ -37,6 +41,10 @@ pub fn install_shortcuts(
                 }
                 Some(ShortcutAction::CloseTab) => {
                     state.borrow_mut().close_active_tab();
+                    gtk4::glib::Propagation::Stop
+                }
+                Some(ShortcutAction::RenameTab) => {
+                    state.borrow_mut().begin_rename_active_tab();
                     gtk4::glib::Propagation::Stop
                 }
                 Some(ShortcutAction::NextTab) => {
@@ -868,5 +876,38 @@ pub fn handle_browser_close(state: &Rc<RefCell<AppState>>) {
     if let Some(ref mut bm) = s.browser_manager {
         bm.shutdown();
         s.browser_manager = None;
+    }
+}
+
+/// Launch another cmux instance in a free slot.
+///
+/// A separate process, not a second window of this one: each instance owns its
+/// sidebar, workspaces and session file. See `instance` for why sharing them in
+/// one process would need AppState to stop being a singleton.
+fn spawn_new_window() {
+    let Some(slot) = crate::instance::find_free_slot() else {
+        eprintln!(
+            "cmux: no free instance slot (max {}) — close a cmux window first",
+            crate::instance::MAX_SLOT
+        );
+        return;
+    };
+
+    // /proc/self/exe rather than argv[0]: correct even when launched through a
+    // relative path, a symlink, or the .desktop wrapper.
+    let exe = match std::fs::read_link("/proc/self/exe") {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("cmux: cannot resolve own executable: {e}");
+            return;
+        }
+    };
+
+    match std::process::Command::new(exe)
+        .env(crate::instance::SLOT_ENV, slot.to_string())
+        .spawn()
+    {
+        Ok(_) => eprintln!("cmux: opened new window in instance slot {slot}"),
+        Err(e) => eprintln!("cmux: failed to spawn new window: {e}"),
     }
 }

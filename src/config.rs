@@ -31,10 +31,13 @@ pub struct BrowserConfig {
 /// None means "use default".
 #[derive(serde::Deserialize, Default, Debug)]
 pub struct ShortcutConfig {
+    /// Opens another cmux instance with its own sidebar and session.
+    pub new_window: Option<String>,
     /// Tabs live inside a workspace (the level cmux on macOS has). new_tab is
     /// Ctrl+T by default because that is what every terminal binds it to.
     pub new_tab: Option<String>,
     pub close_tab: Option<String>,
+    pub rename_tab: Option<String>,
     pub next_tab: Option<String>,
     pub prev_tab: Option<String>,
     pub new_workspace: Option<String>,
@@ -101,8 +104,10 @@ impl Default for HeaderBarConfig {
 /// All bindable shortcut actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ShortcutAction {
+    NewWindow,
     NewTab,
     CloseTab,
+    RenameTab,
     NextTab,
     PrevTab,
     NewWorkspace,
@@ -139,7 +144,8 @@ pub struct ShortcutMap {
 
 /// Known shortcut action names for unknown-key detection.
 const KNOWN_SHORTCUTS: &[&str] = &[
-    "new_tab", "close_tab", "next_tab", "prev_tab",
+    "new_window",
+    "new_tab", "close_tab", "rename_tab", "next_tab", "prev_tab",
     "new_workspace", "close_workspace", "next_workspace", "prev_workspace",
     "rename_workspace", "toggle_sidebar", "split_right", "split_down",
     "close_pane", "new_ssh_workspace", "focus_left", "focus_right", "focus_up", "focus_down",
@@ -209,8 +215,10 @@ fn warn_unknown_shortcuts(content: &str) {
 impl ShortcutAction {
     /// Every bindable action, in a stable order.
     pub const ALL: &'static [ShortcutAction] = &[
+        ShortcutAction::NewWindow,
         ShortcutAction::NewTab,
         ShortcutAction::CloseTab,
+        ShortcutAction::RenameTab,
         ShortcutAction::NextTab,
         ShortcutAction::PrevTab,
         ShortcutAction::NewWorkspace,
@@ -244,14 +252,19 @@ impl ShortcutAction {
     pub fn default_accel(self) -> &'static str {
         use ShortcutAction::*;
         match self {
+            NewWindow => "<Ctrl><Shift>n",
             NewTab => "<Ctrl>t",
             CloseTab => "<Ctrl>w",
-            NextTab => "<Ctrl>Tab",
-            PrevTab => "<Ctrl><Shift>Tab",
+            RenameTab => "F2",
+            // Page Up/Down move within a workspace (tabs); Ctrl+Tab moves
+            // between workspaces. Matches how the user drives the app.
+            NextTab => "<Ctrl>Page_Down",
+            PrevTab => "<Ctrl>Page_Up",
             NewWorkspace => "<Ctrl>n",
             CloseWorkspace => "<Ctrl><Shift>w",
-            NextWorkspace => "<Ctrl>bracketright",
-            PrevWorkspace => "<Ctrl>bracketleft",
+            // Not Ctrl+[ / Ctrl+]: Ctrl+[ is ESC and must reach the terminal.
+            NextWorkspace => "<Ctrl>Tab",
+            PrevWorkspace => "<Ctrl><Shift>Tab",
             RenameWorkspace => "<Ctrl><Shift>r",
             ToggleSidebar => "<Ctrl>b",
             SplitRight => "<Ctrl>d",
@@ -294,7 +307,7 @@ impl ShortcutAction {
             SplitDown => Some("win.split-down"),
             RenameWorkspace => Some("win.rename-workspace"),
             // Handled solely by the key controller — no menu entry.
-            NewTab | CloseTab | NextTab | PrevTab => None,
+            NewWindow | NewTab | CloseTab | RenameTab | NextTab | PrevTab => None,
             NextWorkspace | PrevWorkspace | BrowserClose => None,
             FocusLeft | FocusRight | FocusUp | FocusDown => None,
             Workspace1 | Workspace2 | Workspace3 | Workspace4 | Workspace5 => None,
@@ -306,8 +319,10 @@ impl ShortcutAction {
     fn configured_accel(self, config: &ShortcutConfig) -> Option<&str> {
         use ShortcutAction::*;
         match self {
+            NewWindow => config.new_window.as_deref(),
             NewTab => config.new_tab.as_deref(),
             CloseTab => config.close_tab.as_deref(),
+            RenameTab => config.rename_tab.as_deref(),
             NextTab => config.next_tab.as_deref(),
             PrevTab => config.prev_tab.as_deref(),
             NewWorkspace => config.new_workspace.as_deref(),

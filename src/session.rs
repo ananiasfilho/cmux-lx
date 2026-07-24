@@ -38,7 +38,8 @@ pub fn session_path() -> PathBuf {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
         format!("{home}/.local/share")
     });
-    PathBuf::from(base).join("cmux").join("session.json")
+    let name = format!("session{}.json", crate::instance::suffix());
+    PathBuf::from(base).join("cmux").join(name)
 }
 
 /// Save session data atomically.

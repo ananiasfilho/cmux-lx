@@ -617,8 +617,45 @@ impl AppState {
                 state.borrow_mut().new_tab();
             }) as std::rc::Rc<dyn Fn()>
         };
+        let rename = {
+            let state = state.clone();
+            std::rc::Rc::new(move |tab_index: usize, title: Option<String>| {
+                let mut s = state.borrow_mut();
+                let active = s.active_index;
+                if let Some(tabs) = s.workspace_tabs.get_mut(active) {
+                    match title {
+                        Some(t) => {
+                            tabs.cancel_rename();
+                            tabs.set_title(tab_index, &t);
+                        }
+                        None => tabs.cancel_rename(),
+                    }
+                }
+                drop(s);
+                state.borrow().trigger_session_save();
+            }) as std::rc::Rc<dyn Fn(usize, Option<String>)>
+        };
+        let rename_request = {
+            let state = state.clone();
+            std::rc::Rc::new(move |tab_index: usize| {
+                let mut s = state.borrow_mut();
+                let active = s.active_index;
+                if let Some(tabs) = s.workspace_tabs.get_mut(active) {
+                    tabs.begin_rename(tab_index);
+                }
+            }) as std::rc::Rc<dyn Fn(usize)>
+        };
         if let Some(tabs) = state.borrow_mut().workspace_tabs.get_mut(idx) {
-            tabs.set_handlers(select, new_tab);
+            tabs.set_handlers(select, new_tab, rename, rename_request);
+        }
+    }
+
+    /// Start renaming the active tab (F2, or double-click on the tab).
+    pub fn begin_rename_active_tab(&mut self) {
+        let idx = self.active_index;
+        if let Some(tabs) = self.workspace_tabs.get_mut(idx) {
+            let active_tab = tabs.active_index();
+            tabs.begin_rename(active_tab);
         }
     }
 

@@ -48,6 +48,13 @@ pub struct WorkspaceTabs {
     on_select: Option<std::rc::Rc<dyn Fn(usize)>>,
     /// Invoked when the strip's "+" button is clicked.
     on_new: Option<std::rc::Rc<dyn Fn()>>,
+    /// Index of the tab currently being renamed inline, if any.
+    renaming: Option<usize>,
+    /// Called with (index, Some(new_title)) to commit a rename, or
+    /// (index, None) to cancel it.
+    on_rename: Option<std::rc::Rc<dyn Fn(usize, Option<String>)>>,
+    /// Called when a double-click asks to start renaming tab `index`.
+    on_rename_request: Option<std::rc::Rc<dyn Fn(usize)>>,
 }
 
 impl WorkspaceTabs {
@@ -81,6 +88,9 @@ impl WorkspaceTabs {
             next_tab_number: 2,
             on_select: None,
             on_new: None,
+            renaming: None,
+            on_rename: None,
+            on_rename_request: None,
         };
         this.rebuild_strip();
         this
@@ -91,10 +101,21 @@ impl WorkspaceTabs {
         &mut self,
         on_select: std::rc::Rc<dyn Fn(usize)>,
         on_new: std::rc::Rc<dyn Fn()>,
+        on_rename: std::rc::Rc<dyn Fn(usize, Option<String>)>,
+        on_rename_request: std::rc::Rc<dyn Fn(usize)>,
     ) {
         self.on_select = Some(on_select);
         self.on_new = Some(on_new);
+        self.on_rename = Some(on_rename);
+        self.on_rename_request = Some(on_rename_request);
         self.rebuild_strip();
+    }
+
+    /// Leave inline-rename mode without changing anything.
+    pub fn cancel_rename(&mut self) {
+        if self.renaming.take().is_some() {
+            self.rebuild_strip();
+        }
     }
 
     /// Widget to install as the workspace's page in the outer stack.
@@ -108,6 +129,35 @@ impl WorkspaceTabs {
 
     pub fn active_index(&self) -> usize {
         self.active
+    }
+
+    /// Set a tab's title. Empty input is ignored so a tab can never lose its label.
+    pub fn set_title(&mut self, index: usize, title: &str) {
+        let title = title.trim();
+        if title.is_empty() {
+            return;
+        }
+        if let Some(tab) = self.tabs.get_mut(index) {
+            tab.title = title.to_string();
+        }
+        self.rebuild_strip();
+    }
+
+    pub fn title(&self, index: usize) -> Option<&str> {
+        self.tabs.get(index).map(|t| t.title.as_str())
+    }
+
+    /// Swap the active tab's button for an entry so the title can be edited in
+    /// place. Committed with Enter, abandoned with Escape or focus loss.
+    pub fn begin_rename(&mut self, index: usize) {
+        if index >= self.tabs.len() {
+            return;
+        }
+        // The strip is hidden with a single tab; renaming would have no visible
+        // target, so promote it to visible first.
+        self.strip.set_visible(true);
+        self.renaming = Some(index);
+        self.rebuild_strip();
     }
 
     pub fn titles(&self) -> Vec<String> {
@@ -246,6 +296,34 @@ impl WorkspaceTabs {
         self.strip.set_visible(true);
 
         for (i, tab) in self.tabs.iter().enumerate() {
+            if self.renaming == Some(i) {
+                let entry = gtk4::Entry::new();
+                entry.set_text(&tab.title);
+                entry.add_css_class("tab-rename");
+                entry.set_width_chars(14);
+                entry.select_region(0, -1);
+
+                if let Some(ref cb) = self.on_rename {
+                    let cb = cb.clone();
+                    entry.connect_activate(move |e| cb(i, Some(e.text().to_string())));
+                }
+                if let Some(ref cb) = self.on_rename {
+                    let cb = cb.clone();
+                    let key = gtk4::EventControllerKey::new();
+                    key.connect_key_pressed(move |_, keyval, _, _| {
+                        if keyval == gtk4::gdk::Key::Escape {
+                            cb(i, None);
+                            return gtk4::glib::Propagation::Stop;
+                        }
+                        gtk4::glib::Propagation::Proceed
+                    });
+                    entry.add_controller(key);
+                }
+                self.strip.append(&entry);
+                entry.grab_focus();
+                continue;
+            }
+
             let label = gtk4::Label::new(Some(&tab.title));
             label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
             label.set_max_width_chars(18);
@@ -259,6 +337,16 @@ impl WorkspaceTabs {
             if let Some(ref cb) = self.on_select {
                 let cb = cb.clone();
                 button.connect_clicked(move |_| cb(i));
+            }
+            if let Some(ref cb) = self.on_rename_request {
+                let cb = cb.clone();
+                let gesture = gtk4::GestureClick::new();
+                gesture.connect_pressed(move |_, n_press, _, _| {
+                    if n_press == 2 {
+                        cb(i);
+                    }
+                });
+                button.add_controller(gesture);
             }
             self.strip.append(&button);
         }
